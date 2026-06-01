@@ -7,3 +7,13 @@ tmp/
 dist/
 build/
 .env
+*.txt
+
+# MinerU model weights (large files, downloaded separately)
+mineru_models/
+
+# MinerU runtime config (auto-generated in user home by the service)
+magic-pdf.json
+
+# Test output
+output_test/

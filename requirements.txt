@@ -1,5 +1,7 @@
 fastapi>=0.110.0
 uvicorn[standard]>=0.27.0
 markitdown[all]>=0.1.0
+mineru[all]>=3.0.0
 pydantic>=2.0.0
 python-multipart>=0.0.9
+loguru>=0.7.0

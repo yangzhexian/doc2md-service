@@ -1,74 +1,180 @@
 # Document to Markdown Converter Service
 
-基于 [MinerU](https://github.com/opendatalab/MinerU) 和 [MarkItDown](https://github.com/microsoft/markitdown) 构建的本地文档转 Markdown HTTP 微服务，支持 PDF、DOCX、PPTX、XLSX、HTML、CSV、图片等多种格式。
+A local HTTP microservice that converts PDF, DOCX, PPTX, XLSX, HTML, CSV,
+images, and other formats to Markdown. Powered by
+**[MinerU](https://github.com/opendatalab/MinerU)** (PDF) and
+**[MarkItDown](https://github.com/microsoft/markitdown)** (all other formats).
 
-## 特性
+## Features
 
-- **双引擎 PDF 转换**：复杂排版的 PDF（含表格、公式）优先使用 MinerU（`magic-pdf`）处理；若 MinerU 不可用或转换失败，自动降级为 MarkItDown。
-- **多格式支持**：DOCX、PPTX、XLSX、HTML、CSV、JSON、XML、图片、音频等格式统一由 MarkItDown 转换。
-- **两种调用方式**：支持本地文件路径直接转换（`POST /convert/path`）和文件上传转换（`POST /convert/upload`）。
-- **Swagger UI**：内置 `/docs` 交互式 API 文档，方便人工调试。
-- **健康检查**：`GET /health` 返回服务状态及 MinerU 可用性。
+- **High-quality PDF conversion** — MinerU with GPU-accelerated OCR handles
+  complex layouts, math formulas, tables, and multi-column papers.
+- **Multi-format support** — DOCX, PPTX, XLSX, HTML, CSV, JSON, XML, images,
+  audio, and ZIP via MarkItDown.
+- **Automatic fallback** — Falls back to MarkItDown if MinerU PDF conversion fails.
+- **Two API modes** — Convert by local file path or file upload.
+- **Swagger UI** — Interactive API docs at `/docs`.
+- **Health check** — `GET /health` reports service status and GPU availability.
 
-## 环境要求
+## Requirements
 
-- Python 3.12+
-- 操作系统：Linux / macOS / Windows（WSL 推荐）
-- MinerU 可选（仅 PDF 复杂排版需要）
+| Requirement | Minimum |
+|---|---|
+| Operating System | Linux / Windows / macOS 14+ |
+| Python | 3.10 – 3.13 |
+| RAM | 16 GB (32 GB recommended) |
+| Disk (free space) | 20 GB (SSD recommended) |
+| GPU VRAM (optional) | 4 GB for GPU acceleration |
 
-## 依赖安装
+## Quick Start
 
-### 1. 基础依赖
+### 1. Clone the repository
 
 ```bash
+git clone https://github.com/<your-username>/doc2md-service.git
+cd doc2md-service
+```
+
+### 2. Create a virtual environment
+
+```bash
+python -m venv venv
+
+# Linux / macOS
+source venv/bin/activate
+
+# Windows
+venv\Scripts\activate
+```
+
+### 3. Install dependencies
+
+```bash
+pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### 2. MinerU（可选，用于 PDF 高精度转换）
+> **Note:** `mineru[all]` includes PyTorch and all core features. The first
+> installation may take several minutes.
 
-MinerU 是一个专门处理复杂 PDF 文档（含表格、公式、多栏布局）的开源工具。安装步骤请参考官方文档：
+### 4. Download MinerU models
 
-- [MinerU 官方安装指南](https://github.com/opendatalab/MinerU)
-
-简要步骤（Linux / WSL）：
+MinerU requires model weights (~1.2 GB) for PDF parsing. These are stored
+in the `mineru_models/` directory within the project.
 
 ```bash
-# 安装 MinerU
-pip install magic-pdf
+# Download models from HuggingFace (default)
+mineru-models-download
 
-# 下载模型权重（首次运行时会自动下载，也可以手动预先下载）
-# 详见官方文档
+# If HuggingFace is inaccessible from your region, use ModelScope instead:
+# (Linux / macOS)
+export MINERU_MODEL_SOURCE=modelscope
+# (Windows CMD)
+set MINERU_MODEL_SOURCE=modelscope
+# (Windows PowerShell)
+$env:MINERU_MODEL_SOURCE="modelscope"
+
+mineru-models-download
 ```
 
-如果不需要 PDF 高精度转换，或 MinerU 安装失败，服务会自动降级为 MarkItDown 处理所有 PDF，不影响其他格式的转换。
-
-> **Windows 用户注意**：MinerU 在原生 Windows 上兼容性有限，建议使用 WSL2 运行本服务。
-
-## 快速启动
+After downloading, copy the models into the project directory:
 
 ```bash
-# 安装依赖
-pip install -r requirements.txt
+# Locate the downloaded model directory (printed by mineru-models-download)
+# or find it at:
+#   Linux/macOS: ~/.cache/huggingface/hub/models--opendatalab--PDF-Extract-Kit-1.0/snapshots/<hash>/
+#   Windows:     %USERPROFILE%\.cache\huggingface\hub\models--opendatalab--PDF-Extract-Kit-1.0\snapshots\<hash>\
+#
+#   ModelScope:
+#   Linux/macOS: ~/.cache/modelscope/hub/models/opendatalab/PDF-Extract-Kit-1.0/
+#   Windows:     %USERPROFILE%\.cache\modelscope\hub\models\opendatalab\PDF-Extract-Kit-1.0\
 
-# 启动服务
+# Copy the model files into the project (example path — adjust to your cache location):
+cp -rL ~/.cache/huggingface/hub/models--opendatalab--PDF-Extract-Kit-1.0/snapshots/*/models mineru_models/
+```
+
+> **Alternatively**, set the `MINERU_MODEL_SOURCE` environment variable to
+> `huggingface` or `modelscope` and skip the manual copy step. However, the
+> service will need network access on first run to download models.
+
+### 5. Start the service
+
+```bash
 uvicorn converter_service:app --host 127.0.0.1 --port 8000
 ```
 
-启动后访问：
-- Swagger UI：http://127.0.0.1:8000/docs
-- 健康检查：http://127.0.0.1:8000/health
+Or using Python directly:
 
-## API 文档
+```bash
+python converter_service.py
+```
+
+Once started, open your browser to:
+
+- **Swagger UI:** [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
+- **Health check:** [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health)
+
+### 6. Test the conversion
+
+```bash
+# Health check
+curl http://127.0.0.1:8000/health
+
+# Convert a PDF by local path
+curl -X POST http://127.0.0.1:8000/convert/path \
+  -H "Content-Type: application/json" \
+  -d '{"file_path": "/absolute/path/to/document.pdf"}'
+
+# Convert a file by upload
+curl -X POST http://127.0.0.1:8000/convert/upload \
+  -F "file=@/path/to/document.docx"
+```
+
+## How MinerU Models Are Configured
+
+This project stores MinerU model weights locally in the `mineru_models/`
+directory so that no network access is needed at runtime.
+
+On startup, `converter_service.py` automatically:
+
+1. Sets `MINERU_MODEL_SOURCE=local` to use local models.
+2. Writes `mineru.json` and `magic-pdf.json` to your user home directory
+   with the correct absolute path to `mineru_models/`.
+3. Sets `MINERU_TOOLS_CONFIG_JSON` to point to the project's config template.
+
+This means the service is **self-configuring** — you just need to ensure
+`mineru_models/` exists with the downloaded model files.
+
+### Model directory structure
+
+```
+mineru_models/
+└── models/
+    ├── Layout/
+    │   └── PP-DocLayoutV2/
+    ├── MFR/
+    │   └── unimernet_hf_small_2503/
+    ├── OCR/
+    │   └── paddleocr_torch/
+    ├── TabCls/
+    │   └── paddle_table_cls/
+    └── TabRec/
+        ├── SlanetPlus/
+        └── UnetStructure/
+```
+
+## API Reference
 
 ### GET /health
 
-健康检查，返回服务状态和 MinerU 是否可用。
+Returns service status, MinerU availability, and GPU status.
 
-**响应示例**：
+**Response:**
 ```json
 {
   "status": "ok",
-  "mineru_available": true
+  "mineru_available": true,
+  "gpu_available": true
 }
 ```
 
@@ -76,26 +182,22 @@ uvicorn converter_service:app --host 127.0.0.1 --port 8000
 
 ### POST /convert/path
 
-通过本地文件绝对路径转换文档。
+Convert a file by its local absolute path.
 
-**请求体**（JSON）：
-```json
-{
-  "file_path": "/home/user/documents/paper.pdf",
-  "use_mineru_for_pdf": true
-}
-```
+**Request body (JSON):**
 
-| 参数 | 类型 | 必需 | 说明 |
-|------|------|------|------|
-| `file_path` | string | 是 | 本地文件的绝对路径 |
-| `use_mineru_for_pdf` | bool | 否 | PDF 文件是否优先使用 MinerU（默认 true） |
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `file_path` | string | yes | — | Absolute path to the file |
+| `use_mineru_for_pdf` | bool | no | `true` | Use MinerU for PDF files |
+| `mineru_method` | string | no | `"ocr"` | Parse method: `ocr`, `txt`, or `auto` |
+| `mineru_lang` | string | no | `null` | OCR language: `en`, `ch`, etc. (`null` = auto) |
 
-**响应示例**：
+**Response:**
 ```json
 {
   "status": "success",
-  "markdown": "# Paper Title\n\n## Abstract\n...",
+  "markdown": "# Document Title\n\nContent...",
   "engine": "mineru",
   "detail": null
 }
@@ -105,46 +207,63 @@ uvicorn converter_service:app --host 127.0.0.1 --port 8000
 
 ### POST /convert/upload
 
-上传文件进行转换。
+Upload a file for conversion.
 
-**请求**（multipart/form-data）：
-| 参数 | 类型 | 必需 | 说明 |
-|------|------|------|------|
-| `file` | file | 是 | 要上传的文件 |
-| `use_mineru_for_pdf` | bool | 否 | PDF 文件是否优先使用 MinerU（默认 true） |
+**Request (multipart/form-data):**
 
-**响应示例**：
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `file` | file | yes | — | File to convert |
+| `use_mineru_for_pdf` | bool | no | `true` | Use MinerU for PDF files |
+| `mineru_method` | string | no | `"ocr"` | Parse method |
+| `mineru_lang` | string | no | `null` | OCR language |
+
+**Response:** Same as `/convert/path`.
+
+### Error Responses
+
+**404 — File not found:**
 ```json
-{
-  "status": "success",
-  "markdown": "# Document Content\n...",
-  "engine": "markitdown",
-  "detail": null
-}
+{ "detail": "File not found: /path/to/nonexistent.pdf" }
 ```
 
-**错误响应**（HTTP 400/404）：
+**400 — Conversion error:**
 ```json
-{
-  "detail": "File not found: /path/to/nonexistent.pdf"
-}
+{ "detail": "MinerU error: ... MarkItDown fallback error: ..." }
 ```
 
-## 调用示例
+## Supported File Formats
+
+| Category | Extensions | Engine |
+|---|---|---|
+| PDF | `.pdf` | MinerU → MarkItDown (fallback) |
+| Word | `.docx` | MarkItDown |
+| PowerPoint | `.pptx` | MarkItDown |
+| Excel | `.xlsx` | MarkItDown |
+| Web | `.html`, `.htm` | MarkItDown |
+| Data | `.csv`, `.json`, `.xml` | MarkItDown |
+| Images | `.jpg`, `.jpeg`, `.png`, `.gif`, `.bmp`, `.tiff`, `.webp` | MarkItDown |
+| Audio | `.mp3`, `.wav`, `.ogg`, `.wma`, `.m4a`, `.flac` | MarkItDown |
+| Archives | `.zip` | MarkItDown |
+
+## Usage Examples
 
 ### Python
 
 ```python
 import requests
 
-# 方式一：本地路径
+# Convert by file path
 resp = requests.post(
     "http://127.0.0.1:8000/convert/path",
-    json={"file_path": "/absolute/path/to/document.pdf", "use_mineru_for_pdf": True},
+    json={
+        "file_path": "/absolute/path/to/paper.pdf",
+        "use_mineru_for_pdf": True,
+    },
 )
 print(resp.json()["markdown"])
 
-# 方式二：上传文件
+# Convert by file upload
 with open("/path/to/document.docx", "rb") as f:
     resp = requests.post(
         "http://127.0.0.1:8000/convert/upload",
@@ -157,50 +276,70 @@ print(resp.json()["markdown"])
 ### curl
 
 ```bash
-# 本地路径方式
+# By file path
 curl -X POST http://127.0.0.1:8000/convert/path \
   -H "Content-Type: application/json" \
   -d '{"file_path": "/path/to/document.pdf"}'
 
-# 上传方式
+# By file upload
 curl -X POST http://127.0.0.1:8000/convert/upload \
   -F "file=@/path/to/document.docx"
 ```
 
-## 支持的文件格式
-
-| 类别 | 扩展名 | 处理引擎 |
-|------|--------|----------|
-| PDF | `.pdf` | MinerU → MarkItDown（自动降级） |
-| Word | `.docx` | MarkItDown |
-| PowerPoint | `.pptx` | MarkItDown |
-| Excel | `.xlsx` | MarkItDown |
-| 网页 | `.html`, `.htm` | MarkItDown |
-| 数据 | `.csv`, `.json`, `.xml` | MarkItDown |
-| 图片 | `.jpg`, `.jpeg`, `.png`, `.gif`, `.bmp`, `.tiff`, `.webp` | MarkItDown |
-| 音频 | `.mp3`, `.wav`, `.ogg`, `.wma`, `.m4a`, `.flac` | MarkItDown |
-| 压缩包 | `.zip` | MarkItDown |
-
-## 项目结构
+## Project Structure
 
 ```
 doc2md-service/
-├── converter_service.py   # 主服务代码（FastAPI 应用）
-├── requirements.txt       # Python 依赖
-├── README.md              # 本文件
-├── .gitignore             # Git 忽略规则
-└── LICENSE                # MIT 许可证
+├── converter_service.py   # Main FastAPI application
+├── mineru.json            # MinerU config template
+├── mineru_models/         # Model weights (~1.2 GB, not committed)
+│   └── models/            #   Downloaded separately
+├── requirements.txt       # Python dependencies
+├── README.md              # This file
+├── .gitignore             # Git ignore rules
+└── LICENSE                # MIT License
 ```
 
-## 注意事项
+## Troubleshooting
 
-1. **MinerU 资源要求**：MinerU 对内存和 CPU 有一定要求，大型 PDF 转换可能耗时较长（默认超时 600 秒）。如果服务器资源有限，可设置 `use_mineru_for_pdf=false` 直接使用 MarkItDown。
-2. **Windows 兼容性**：MinerU 在原生 Windows 上可能存在兼容性问题，建议使用 WSL2 或 Docker。
-3. **文件路径**：`POST /convert/path` 要求传入文件的**绝对路径**，服务进程需要有读取该文件的权限。
-4. **临时文件清理**：`POST /convert/upload` 上传的文件和 MinerU 生成的中间文件会在处理完成后自动清理。
-5. **安全建议**：此服务设计为本地使用，请勿直接暴露在公网上。如需远程访问，请添加认证和鉴权机制。
-6. **音频转换**：音频文件的 Markdown 转录功能需要安装额外的语音识别依赖，请参考 [MarkItDown 文档](https://github.com/microsoft/markitdown)。
+### "MinerU models directory not found"
 
-## 许可证
+Ensure you have completed Step 4 (Download MinerU models) and the
+`mineru_models/models/` directory exists in the project root.
 
-MIT License — 详见 [LICENSE](LICENSE) 文件。
+### "CUDA out of memory" or GPU errors
+
+Set the device to CPU:
+
+```bash
+export MINERU_DEVICE_MODE=cpu
+python converter_service.py
+```
+
+### Windows path too long errors
+
+The service automatically handles long filenames by copying them to a
+short temporary name. If you still encounter path issues, ensure your
+project is located in a short path (e.g., `D:\doc2md\` rather than a
+deeply nested directory).
+
+### HuggingFace inaccessible (network restricted regions)
+
+Use ModelScope as the model source for the initial download:
+
+```bash
+export MINERU_MODEL_SOURCE=modelscope
+mineru-models-download
+```
+
+After downloading, copy the models to `mineru_models/` as described in
+Step 4.
+
+## Security Note
+
+This service is designed for **local use only**. Do not expose it directly
+to the public internet without adding authentication and authorization.
+
+## License
+
+MIT License — see [LICENSE](LICENSE).
