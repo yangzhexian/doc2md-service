@@ -12,9 +12,16 @@ images, and other formats to Markdown. Powered by
 - **Multi-format support** — DOCX, PPTX, XLSX, HTML, CSV, JSON, XML, images,
   audio, and ZIP via MarkItDown.
 - **Automatic fallback** — Falls back to MarkItDown if MinerU PDF conversion fails.
-- **Two API modes** — Convert by local file path or file upload.
+- **Batch processing** — Convert an entire folder of documents at once.
+- **Custom output directory** — Results are saved to `<source>/docs2md/` by
+  default; override with any path.
+- **Three API modes** — Convert by local file path, file upload, or folder path.
+- **One-click start** — `start.sh` (Linux/macOS) and `start.bat` (Windows)
+  handle venv creation, dependency install, and service launch.
 - **Swagger UI** — Interactive API docs at `/docs`.
 - **Health check** — `GET /health` reports service status and GPU availability.
+- **Agent skill** — Includes a Claude Code skill (`.claude/skills/doc2md/`)
+  so AI agents can call the service to convert documents.
 
 ## Requirements
 
@@ -99,15 +106,24 @@ cp -rL ~/.cache/huggingface/hub/models--opendatalab--PDF-Extract-Kit-1.0/snapsho
 
 ### 5. Start the service
 
+**One-click (recommended):**
+
+```bash
+# Linux / macOS
+./start.sh
+
+# Windows
+start.bat
+```
+
+Or manually:
+
 ```bash
 uvicorn converter_service:app --host 127.0.0.1 --port 8000
 ```
 
-Or using Python directly:
-
-```bash
-python converter_service.py
-```
+By default the service listens on `127.0.0.1:8000`. Pass a port number to
+the start script to change it (`./start.sh 9090`).
 
 Once started, open your browser to:
 
@@ -182,13 +198,15 @@ Returns service status, MinerU availability, and GPU status.
 
 ### POST /convert/path
 
-Convert a file by its local absolute path.
+Convert a file by its local absolute path. Results are saved to
+`<source_parent>/docs2md/<stem>.md` by default.
 
 **Request body (JSON):**
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `file_path` | string | yes | — | Absolute path to the file |
+| `output_dir` | string | no | `<parent>/docs2md/` | Directory for output `.md` files |
 | `use_mineru_for_pdf` | bool | no | `true` | Use MinerU for PDF files |
 | `mineru_method` | string | no | `"ocr"` | Parse method: `ocr`, `txt`, or `auto` |
 | `mineru_lang` | string | no | `null` | OCR language: `en`, `ch`, etc. (`null` = auto) |
@@ -199,6 +217,7 @@ Convert a file by its local absolute path.
   "status": "success",
   "markdown": "# Document Title\n\nContent...",
   "engine": "mineru",
+  "output_path": "/path/to/source/docs2md/document.md",
   "detail": null
 }
 ```
@@ -214,11 +233,50 @@ Upload a file for conversion.
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `file` | file | yes | — | File to convert |
+| `output_dir` | string | no | `null` | Directory for output `.md` file |
 | `use_mineru_for_pdf` | bool | no | `true` | Use MinerU for PDF files |
 | `mineru_method` | string | no | `"ocr"` | Parse method |
 | `mineru_lang` | string | no | `null` | OCR language |
 
 **Response:** Same as `/convert/path`.
+
+---
+
+### POST /convert/folder
+
+Batch-convert all supported files in a folder. Results are saved to
+`<folder>/docs2md/<relative_path>/<stem>.md` by default.
+
+**Request body (JSON):**
+
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `folder_path` | string | yes | — | Absolute path to the folder |
+| `output_dir` | string | no | `<folder>/docs2md/` | Directory for output `.md` files |
+| `recursive` | bool | no | `true` | Recurse into subdirectories |
+| `use_mineru_for_pdf` | bool | no | `true` | Use MinerU for PDF files |
+| `mineru_method` | string | no | `"ocr"` | Parse method |
+| `mineru_lang` | string | no | `null` | OCR language |
+
+**Response:**
+```json
+{
+  "status": "success",
+  "total": 5,
+  "succeeded": 5,
+  "failed": 0,
+  "results": [
+    {
+      "file_path": "/path/to/docs/paper.pdf",
+      "stem": "paper",
+      "engine": "mineru",
+      "output_path": "/path/to/docs/docs2md/paper.md",
+      "status": "success",
+      "error": null
+    }
+  ]
+}
+```
 
 ### Error Responses
 
@@ -253,15 +311,29 @@ Upload a file for conversion.
 ```python
 import requests
 
-# Convert by file path
+# Convert a single file
 resp = requests.post(
     "http://127.0.0.1:8000/convert/path",
     json={
         "file_path": "/absolute/path/to/paper.pdf",
         "use_mineru_for_pdf": True,
+        "output_dir": "/custom/output/dir",  # optional
     },
 )
-print(resp.json()["markdown"])
+data = resp.json()
+print(f"Engine: {data['engine']}, Output: {data['output_path']}")
+print(data["markdown"][:200])
+
+# Batch-convert a folder
+resp = requests.post(
+    "http://127.0.0.1:8000/convert/folder",
+    json={
+        "folder_path": "/absolute/path/to/docs/",
+        "recursive": True,
+    },
+)
+for item in resp.json()["results"]:
+    print(f"{item['stem']}: {item['status']} ({item['engine']})")
 
 # Convert by file upload
 with open("/path/to/document.docx", "rb") as f:
@@ -276,12 +348,22 @@ print(resp.json()["markdown"])
 ### curl
 
 ```bash
-# By file path
+# Single file
 curl -X POST http://127.0.0.1:8000/convert/path \
   -H "Content-Type: application/json" \
   -d '{"file_path": "/path/to/document.pdf"}'
 
-# By file upload
+# Single file with custom output directory
+curl -X POST http://127.0.0.1:8000/convert/path \
+  -H "Content-Type: application/json" \
+  -d '{"file_path": "/path/to/document.pdf", "output_dir": "/output/path"}'
+
+# Batch folder conversion
+curl -X POST http://127.0.0.1:8000/convert/folder \
+  -H "Content-Type: application/json" \
+  -d '{"folder_path": "/path/to/docs/", "recursive": true}'
+
+# File upload
 curl -X POST http://127.0.0.1:8000/convert/upload \
   -F "file=@/path/to/document.docx"
 ```
@@ -291,14 +373,33 @@ curl -X POST http://127.0.0.1:8000/convert/upload \
 ```
 doc2md-service/
 ├── converter_service.py   # Main FastAPI application
+├── start.sh               # One-click start script (Linux / macOS)
+├── start.bat              # One-click start script (Windows)
 ├── mineru.json            # MinerU config template
 ├── mineru_models/         # Model weights (~1.2 GB, not committed)
 │   └── models/            #   Downloaded separately
 ├── requirements.txt       # Python dependencies
 ├── README.md              # This file
 ├── .gitignore             # Git ignore rules
-└── LICENSE                # MIT License
+├── LICENSE                # MIT License
+└── .claude/
+    └── skills/
+        └── doc2md/        # Agent skill for AI-powered conversion
+            └── SKILL.md
 ```
+
+## Agent Skill
+
+This repository includes a [Claude Code skill](https://agentskills.io) at
+`.claude/skills/doc2md/SKILL.md`. When this project is open in Claude Code or
+another Agent Skills-compatible agent, the agent can:
+
+- Start the service automatically (if not running)
+- Convert documents by calling the local API
+- Batch-process entire folders
+
+The skill works by sending HTTP requests to `http://127.0.0.1:8000` — just
+make sure the service is running first with `./start.sh` or `start.bat`.
 
 ## Troubleshooting
 
