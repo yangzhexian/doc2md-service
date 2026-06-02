@@ -35,116 +35,45 @@ images, and other formats to Markdown. Powered by
 
 ## Quick Start
 
-### 1. Clone the repository
+### 1. Clone
 
 ```bash
 git clone https://github.com/yangzhexian/doc2md-service.git
 cd doc2md-service
 ```
 
-### 2. Create a virtual environment
+### 2. Download MinerU models (~1.2 GB)
 
 ```bash
-python -m venv venv
+mineru-models-download
+```
 
+Then copy the models into the project:
+
+```bash
 # Linux / macOS
-source venv/bin/activate
-
-# Windows
-venv\Scripts\activate
-```
-
-### 3. Install dependencies
-
-```bash
-pip install --upgrade pip
-pip install -r requirements.txt
-```
-
-> **Note:** `mineru[all]` includes PyTorch and all core features. The first
-> installation may take several minutes.
-
-### 4. Download MinerU models
-
-MinerU requires model weights (~1.2 GB) for PDF parsing. These are stored
-in the `mineru_models/` directory within the project.
-
-```bash
-# Download models from HuggingFace (default)
-mineru-models-download
-
-# If HuggingFace is inaccessible from your region, use ModelScope instead:
-# (Linux / macOS)
-export MINERU_MODEL_SOURCE=modelscope
-# (Windows CMD)
-set MINERU_MODEL_SOURCE=modelscope
-# (Windows PowerShell)
-$env:MINERU_MODEL_SOURCE="modelscope"
-
-mineru-models-download
-```
-
-After downloading, copy the models into the project directory:
-
-```bash
-# Locate the downloaded model directory (printed by mineru-models-download)
-# or find it at:
-#   Linux/macOS: ~/.cache/huggingface/hub/models--opendatalab--PDF-Extract-Kit-1.0/snapshots/<hash>/
-#   Windows:     %USERPROFILE%\.cache\huggingface\hub\models--opendatalab--PDF-Extract-Kit-1.0\snapshots\<hash>\
-#
-#   ModelScope:
-#   Linux/macOS: ~/.cache/modelscope/hub/models/opendatalab/PDF-Extract-Kit-1.0/
-#   Windows:     %USERPROFILE%\.cache\modelscope\hub\models\opendatalab\PDF-Extract-Kit-1.0\
-
-# Copy the model files into the project (example path — adjust to your cache location):
 cp -rL ~/.cache/huggingface/hub/models--opendatalab--PDF-Extract-Kit-1.0/snapshots/*/models mineru_models/
+
+# Windows (CMD)
+xcopy /E %USERPROFILE%\.cache\huggingface\hub\models--opendatalab--PDF-Extract-Kit-1.0\snapshots\*\models mineru_models\
 ```
 
-> **Alternatively**, set the `MINERU_MODEL_SOURCE` environment variable to
-> `huggingface` or `modelscope` and skip the manual copy step. However, the
-> service will need network access on first run to download models.
+> If HuggingFace is inaccessible, set `MINERU_MODEL_SOURCE=modelscope` before
+> downloading, then copy from `~/.cache/modelscope/hub/models/opendatalab/PDF-Extract-Kit-1.0/`
+> instead.
 
-### 5. Start the service
-
-**One-click (recommended):**
+### 3. Start
 
 ```bash
-# Linux / macOS
-./start.sh
-
-# Windows
-start.bat
+./start.sh      # Linux / macOS
+start.bat       # Windows
 ```
 
-Or manually:
+The script handles everything automatically — virtual environment, dependencies,
+and service launch. Pass a port number to change from the default 8000:
+`./start.sh 9090`.
 
-```bash
-uvicorn converter_service:app --host 127.0.0.1 --port 8000
-```
-
-By default the service listens on `127.0.0.1:8000`. Pass a port number to
-the start script to change it (`./start.sh 9090`).
-
-Once started, open your browser to:
-
-- **Swagger UI:** [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
-- **Health check:** [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health)
-
-### 6. Test the conversion
-
-```bash
-# Health check
-curl http://127.0.0.1:8000/health
-
-# Convert a PDF by local path
-curl -X POST http://127.0.0.1:8000/convert/path \
-  -H "Content-Type: application/json" \
-  -d '{"file_path": "/absolute/path/to/document.pdf"}'
-
-# Convert a file by upload
-curl -X POST http://127.0.0.1:8000/convert/upload \
-  -F "file=@/path/to/document.docx"
-```
+Open **[http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)** for the interactive Swagger UI.
 
 ## How MinerU Models Are Configured
 
@@ -405,7 +334,7 @@ make sure the service is running first with `./start.sh` or `start.bat`.
 
 ### "MinerU models directory not found"
 
-Ensure you have completed Step 4 (Download MinerU models) and the
+Ensure you have completed Step 2 (Download MinerU models) and the
 `mineru_models/models/` directory exists in the project root.
 
 ### "CUDA out of memory" or GPU errors
@@ -434,7 +363,7 @@ mineru-models-download
 ```
 
 After downloading, copy the models to `mineru_models/` as described in
-Step 4.
+Step 2.
 
 ## Security Note
 
