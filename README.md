@@ -38,7 +38,7 @@ images, and other formats to Markdown. Powered by
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/<your-username>/doc2md-service.git
+git clone https://github.com/yangzhexian/doc2md-service.git
 cd doc2md-service
 ```
 
