@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import uuid
 from pathlib import Path
@@ -92,31 +93,73 @@ SUPPORTED_EXTENSIONS = {
 # Characters that can follow a backslash to form a valid JSON escape sequence.
 _VALID_JSON_ESCAPES = frozenset('"\\/bfnrtu')
 
+# Encodings to try when decoding request bodies, in order of preference.
+# UTF-8 is the standard; GBK/GB18030 handle Chinese Windows codepages.
+_BODY_ENCODINGS = ("utf-8", "gb18030", "gbk", "latin-1")
 
-def _fix_json_backslashes(raw_body: bytes) -> bytes:
+
+def _decode_request_body(body: bytes) -> str:
+    """Decode the request body bytes to a string, trying multiple encodings.
+
+    On Chinese Windows, curl (especially in Git Bash / MSYS2) may send
+    JSON bodies encoded with the system's codepage (GBK/GB18030) instead
+    of UTF-8.  This function tries UTF-8 first, then falls back to common
+    Chinese encodings, so file paths with Chinese characters work correctly.
+    """
+    for encoding in _BODY_ENCODINGS:
+        try:
+            return body.decode(encoding)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    # Last resort: replace undecodable bytes
+    return body.decode("utf-8", errors="replace")
+
+
+def _parse_json_body(body: bytes) -> dict:
+    """Parse a JSON request body, handling Windows paths and encoding issues.
+
+    Handles three common problems seen with curl on Windows:
+    1. Chinese characters encoded in GBK/GB18030 instead of UTF-8.
+    2. Single backslashes in file paths that aren't valid JSON escapes.
+    3. Mixed encoding artifacts.
+    """
+    text = _decode_request_body(body)
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # The body may contain Windows paths with unescaped backslashes
+    # (e.g. C:\Users\...).  Double them so they become literal
+    # backslashes after JSON parsing.
+    fixed_text = _fix_json_backslashes(text)
+    return json.loads(fixed_text)
+
+
+def _fix_json_backslashes(text: str) -> str:
     """Fix single backslashes in JSON string values so the body is valid JSON.
 
     Windows file paths like ``C:\\Users\\...`` contain backslashes that are
     illegal in JSON string literals (e.g. ``\\U``, ``\\P``, ``\\d``).  This
-    function walks through the raw JSON bytes tracking whether we are inside a
+    function walks through the JSON text tracking whether we are inside a
     string and doubles any backslash that isn't already part of a valid JSON
     escape sequence.
 
     Already-correct JSON is returned unchanged.
     """
-    body = raw_body.decode("utf-8")
     result: list[str] = []
     in_string = False
     i = 0
-    while i < len(body):
-        ch = body[i]
-        if ch == '"' and (i == 0 or body[i - 1] != '\\'):
+    while i < len(text):
+        ch = text[i]
+        if ch == '"' and (i == 0 or text[i - 1] != '\\'):
             # Toggle string state on unescaped double-quote
             in_string = not in_string
             result.append(ch)
         elif in_string and ch == '\\':
             # Inside a string: check if the next character forms a valid escape
-            if i + 1 < len(body) and body[i + 1] in _VALID_JSON_ESCAPES:
+            if i + 1 < len(text) and text[i + 1] in _VALID_JSON_ESCAPES:
                 # Valid escape (e.g. \\n, \\t, \\\", \\\\) — leave as-is
                 result.append(ch)
             else:
@@ -126,7 +169,7 @@ def _fix_json_backslashes(raw_body: bytes) -> bytes:
         else:
             result.append(ch)
         i += 1
-    return ''.join(result).encode("utf-8")
+    return ''.join(result)
 
 # Windows MAX_PATH is 260 chars. MinerU creates deep nested temp directories
 # (output_dir / filename / method / images / ...).  Keep the working stem
@@ -275,7 +318,22 @@ def convert_pdf_with_mineru(
     os.makedirs(mineru_out_dir, exist_ok=True)
 
     # Locate the mineru CLI (installed as a console script by the package).
+    # First try PATH. If not found, look next to the current Python
+    # executable (handles cases where the venv isn't fully activated).
     mineru_bin = shutil.which("mineru")
+    if mineru_bin is None:
+        # Search alongside the running Python interpreter (venv Scripts/ or bin/)
+        python_dir = Path(sys.executable).parent
+        mineru_name = "mineru.exe" if os.name == "nt" else "mineru"
+        candidate = python_dir / mineru_name
+        if candidate.is_file():
+            mineru_bin = str(candidate)
+    if mineru_bin is None:
+        # Last resort: search the project's venv directly
+        venv_scripts = _PROJECT_ROOT / "venv" / ("Scripts" if os.name == "nt" else "bin")
+        candidate = venv_scripts / ("mineru.exe" if os.name == "nt" else "mineru")
+        if candidate.is_file():
+            mineru_bin = str(candidate)
     if mineru_bin is None:
         raise RuntimeError(
             "MinerU CLI not found in PATH. "
@@ -582,13 +640,11 @@ async def convert_by_path(request: Request):
 
     Accepts Windows-style paths with single backslashes
     (e.g. ``C:\\Users\\...``) in addition to forward-slash paths.
+    Supports UTF-8, GBK, and GB18030 encoded request bodies so that
+    Chinese file paths work correctly with curl on Windows.
     """
     body = await request.body()
-    try:
-        data = json.loads(body)
-    except json.JSONDecodeError:
-        # Body may contain Windows paths with unescaped backslashes
-        data = json.loads(_fix_json_backslashes(body))
+    data = _parse_json_body(body)
 
     req = PathRequest(**data)
     try:
@@ -646,12 +702,11 @@ async def convert_by_folder(request: Request):
 
     Accepts Windows-style paths with single backslashes
     (e.g. ``C:\\Users\\...``) in addition to forward-slash paths.
+    Supports UTF-8, GBK, and GB18030 encoded request bodies so that
+    Chinese folder paths work correctly with curl on Windows.
     """
     body = await request.body()
-    try:
-        data = json.loads(body)
-    except json.JSONDecodeError:
-        data = json.loads(_fix_json_backslashes(body))
+    data = _parse_json_body(body)
 
     req = FolderRequest(**data)
     try:
