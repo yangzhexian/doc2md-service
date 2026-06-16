@@ -56,12 +56,13 @@ curl -X POST http://127.0.0.1:8000/convert/path \
   "status": "success",
   "markdown": "# Title\n\nContent...",
   "engine": "mineru",
-  "output_path": "/path/to/document/docs2md/document.md"
+  "output_path": "/path/to/document/docs2md/document/document.md"
 }
 ```
 
-The converted `.md` file is saved to `<source_parent>/docs2md/<stem>.md`
-by default. Override with `"output_dir": "/custom/output/dir"`.
+The converted `.md` file is saved to `<source_parent>/docs2md/<stem>/<stem>.md`
+by default, with images (if any) in `<source_parent>/docs2md/<stem>/images/`.
+Override with `"output_dir": "/custom/output/dir"`.
 
 ### Batch-convert a folder
 
@@ -123,7 +124,7 @@ for item in r.json()["results"]:
 | `output_dir` | string | `<source>/docs2md/` | Custom output directory |
 | `use_mineru_for_pdf` | bool | `true` | Use MinerU for PDF (falls back to MarkItDown) |
 | `mineru_method` | string | `"ocr"` | `ocr`, `txt`, or `auto` |
-| `mineru_lang` | string | `"en"` | OCR language: `en`, `ch`, etc. |
+| `mineru_lang` | string | auto-detect | OCR language: `en`, `ch`, etc. (`null` = auto-detect) |
 | `recursive` | bool | `true` | (Folder only) Recurse into subdirectories |
 
 ## Instructions

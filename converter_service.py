@@ -191,11 +191,14 @@ def _sanitize_filename(name: str) -> str:
 
 
 def _resolve_output_dir(source_path: str | Path, output_dir: str | None) -> Path:
-    """Resolve the output directory for a given source path.
+    """Resolve the base output directory for a given source path.
 
     If *output_dir* is explicitly given it is used as-is.
     Otherwise the default is ``<source_parent>/docs2md/`` (for files)
     or ``<source>/docs2md/`` (for folders).
+
+    The actual markdown file is written one level deeper by
+    ``_save_markdown``: ``<output_dir>/<stem>/<stem>.md``.
     """
     if output_dir:
         return Path(output_dir)
@@ -208,20 +211,21 @@ def _resolve_output_dir(source_path: str | Path, output_dir: str | None) -> Path
 
 
 def _save_markdown(text: str, output_dir: Path, stem: str, images_dir: Path | None = None) -> str:
-    """Write markdown text to ``<output_dir>/<stem>.md``, creating dirs as needed.
+    """Write markdown text to ``<output_dir>/<stem>/<stem>.md``, creating dirs as needed.
 
     If *images_dir* is given, also copies its contents into
-    ``<output_dir>/images/`` so that relative image references in the
+    ``<output_dir>/<stem>/images/`` so that relative image references in the
     markdown (e.g. ``![](images/foo.jpg)``) resolve correctly.
 
     Returns the absolute path of the written .md file.
     """
-    output_dir.mkdir(parents=True, exist_ok=True)
-    out_path = output_dir / f"{stem}.md"
+    out_dir = output_dir / stem
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"{stem}.md"
     out_path.write_text(text, encoding="utf-8")
 
     if images_dir is not None and images_dir.is_dir():
-        dest_images = output_dir / images_dir.name
+        dest_images = out_dir / "images"
         if dest_images.exists():
             shutil.rmtree(dest_images, ignore_errors=True)
             # On Windows, rmtree with ignore_errors may leave the directory
@@ -350,8 +354,9 @@ def convert_pdf_with_mineru(
     ]
     if lang:
         cmd.extend(["-l", lang])
-    else:
-        cmd.extend(["-l", "en"])  # default to English for academic papers
+    # When lang is not specified, don't pass -l at all — let MinerU
+    # auto-detect the document language.  This is essential for Chinese
+    # documents, where forcing -l en would discard all CJK text.
     if not formula_enable:
         cmd.append("-f false")
     if not table_enable:
@@ -433,7 +438,8 @@ def convert_file(
     Returns ``(markdown_text, engine_used, output_path)``.
 
     If *output_dir* is given (or defaults to ``<parent>/docs2md/``), the
-    result is also written to disk at ``<output_dir>/<stem>.md``.
+    result is written to ``<output_dir>/<stem>/<stem>.md``, with images
+    (if any) placed in ``<output_dir>/<stem>/images/``.
     """
     file_path = Path(file_path)
 
@@ -538,7 +544,7 @@ def convert_folder(
         rel = file_path.relative_to(folder_path)
         file_out_dir = resolved_out / rel.parent
         try:
-            md, engine, _ = convert_file(
+            md, engine, out_path = convert_file(
                 file_path,
                 use_mineru_for_pdf=use_mineru_for_pdf,
                 mineru_method=mineru_method,
@@ -549,7 +555,7 @@ def convert_folder(
                 "file_path": str(file_path),
                 "stem": file_path.stem,
                 "engine": engine,
-                "output_path": str(file_out_dir / f"{file_path.stem}.md"),
+                "output_path": out_path,
                 "status": "success",
                 "error": None,
             })

@@ -170,17 +170,18 @@ Returns service status, MinerU availability, and GPU status.
 ### POST /convert/path
 
 Convert a file by its local absolute path. Results are saved to
-`<source_parent>/docs2md/<stem>.md` by default.
+`<source_parent>/docs2md/<stem>/<stem>.md` by default, with images (if any) in
+`<source_parent>/docs2md/<stem>/images/`.
 
 **Request body (JSON):**
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `file_path` | string | yes | — | Absolute path to the file |
-| `output_dir` | string | no | `<parent>/docs2md/` | Directory for output `.md` files |
+| `output_dir` | string | no | `<parent>/docs2md/` | Base output directory (file saved as `<dir>/<stem>/<stem>.md`) |
 | `use_mineru_for_pdf` | bool | no | `true` | Use MinerU for PDF files |
 | `mineru_method` | string | no | `"ocr"` | Parse method: `ocr`, `txt`, or `auto` |
-| `mineru_lang` | string | no | `null` | OCR language: `en`, `ch`, etc. (`null` = auto) |
+| `mineru_lang` | string | no | `null` | OCR language: `en`, `ch`, etc. (`null` = auto-detect) |
 
 **Response:**
 ```json
@@ -188,7 +189,7 @@ Convert a file by its local absolute path. Results are saved to
   "status": "success",
   "markdown": "# Document Title\n\nContent...",
   "engine": "mineru",
-  "output_path": "/path/to/source/docs2md/document.md",
+  "output_path": "/path/to/source/docs2md/document/document.md",
   "detail": null
 }
 ```
@@ -204,7 +205,7 @@ Upload a file for conversion.
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `file` | file | yes | — | File to convert |
-| `output_dir` | string | no | `null` | Directory for output `.md` file |
+| `output_dir` | string | no | `null` | Base output directory (file saved as `<dir>/<stem>/<stem>.md`) |
 | `use_mineru_for_pdf` | bool | no | `true` | Use MinerU for PDF files |
 | `mineru_method` | string | no | `"ocr"` | Parse method |
 | `mineru_lang` | string | no | `null` | OCR language |
@@ -216,14 +217,15 @@ Upload a file for conversion.
 ### POST /convert/folder
 
 Batch-convert all supported files in a folder. Results are saved to
-`<folder>/docs2md/<relative_path>/<stem>.md` by default.
+`<folder>/docs2md/<relative_path>/<stem>/<stem>.md` by default, with images
+(if any) in `<folder>/docs2md/<relative_path>/<stem>/images/`.
 
 **Request body (JSON):**
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `folder_path` | string | yes | — | Absolute path to the folder |
-| `output_dir` | string | no | `<folder>/docs2md/` | Directory for output `.md` files |
+| `output_dir` | string | no | `<folder>/docs2md/` | Base output directory (files saved as `<dir>/<stem>/<stem>.md`) |
 | `recursive` | bool | no | `true` | Recurse into subdirectories |
 | `use_mineru_for_pdf` | bool | no | `true` | Use MinerU for PDF files |
 | `mineru_method` | string | no | `"ocr"` | Parse method |
@@ -241,7 +243,7 @@ Batch-convert all supported files in a folder. Results are saved to
       "file_path": "/path/to/docs/paper.pdf",
       "stem": "paper",
       "engine": "mineru",
-      "output_path": "/path/to/docs/docs2md/paper.md",
+      "output_path": "/path/to/docs/docs2md/paper/paper.md",
       "status": "success",
       "error": null
     }
