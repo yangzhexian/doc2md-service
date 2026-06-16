@@ -1,4 +1,5 @@
 ---
+name: doc2md
 description: Convert documents (PDF, DOCX, PPTX, XLSX, HTML, CSV, images) to Markdown via a local MinerU API service. Use when the user asks to convert a document, paper, or file to markdown, or wants to extract text from a PDF with formulas and tables preserved.
 ---
 
