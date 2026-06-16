@@ -75,6 +75,48 @@ and service launch. Pass a port number to change from the default 8000:
 
 Open **[http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)** for the interactive Swagger UI.
 
+### 4. (Optional) Autostart on Login / Boot
+
+The service can be configured to start automatically when you log in,
+so you never need to run `start.sh` / `start.bat` manually.
+
+#### Linux / macOS (systemd user service)
+
+```bash
+./scripts/install-autostart.sh        # default port 8000
+./scripts/install-autostart.sh 9090   # custom port
+```
+
+This creates a **systemd user service** that starts on login and
+restarts automatically on failure. Manage it with:
+
+```bash
+systemctl --user start docs2md        # start now
+systemctl --user stop docs2md         # stop
+systemctl --user status docs2md       # check status
+systemctl --user disable docs2md      # remove autostart
+```
+
+The service logs to the systemd journal:
+
+```bash
+journalctl --user -u docs2md -f       # follow logs
+```
+
+#### Windows (Startup folder)
+
+```cmd
+scripts\install-autostart.bat         # default port 8000
+scripts\install-autostart.bat 9090    # custom port
+```
+
+This places a VBS launcher shortcut in your **Windows Startup folder**
+(`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`).
+The launcher runs `start.bat` silently — no console window appears on login.
+
+To remove autostart on Windows, delete the `docs2md.lnk` shortcut from your
+Startup folder.
+
 ## How MinerU Models Are Configured
 
 This project stores MinerU model weights locally in the `mineru_models/`
@@ -304,6 +346,11 @@ doc2md-service/
 ├── converter_service.py   # Main FastAPI application
 ├── start.sh               # One-click start script (Linux / macOS)
 ├── start.bat              # One-click start script (Windows)
+├── scripts/               # Autostart helpers
+│   ├── docs2md.service        # systemd user service template
+│   ├── install-autostart.sh   # Install autostart (Linux / macOS)
+│   ├── install-autostart.bat  # Install autostart (Windows)
+│   └── docs2md-launcher.vbs   # Silent launcher (Windows)
 ├── mineru.json            # MinerU config template
 ├── mineru_models/         # Model weights (~1.2 GB, not committed)
 │   └── models/            #   Downloaded separately
@@ -329,6 +376,30 @@ another Agent Skills-compatible agent, the agent can:
 
 The skill works by sending HTTP requests to `http://127.0.0.1:8000` — just
 make sure the service is running first with `./start.sh` or `start.bat`.
+
+### Global Installation
+
+To use the `doc2md` skill from **any project** (not just this repo),
+install it globally:
+
+```bash
+# From the project root:
+cp -r .claude/skills/doc2md ~/.agents/skills/doc2md
+
+# Or create a symlink:
+ln -s "$(pwd)/.claude/skills/doc2md" ~/.agents/skills/doc2md
+```
+
+After installing, set the `DOCS2MD_HOME` environment variable so the skill
+can find the project from any directory:
+
+```bash
+# Add to ~/.bashrc or ~/.zshrc:
+export DOCS2MD_HOME=/path/to/doc2md-service
+```
+
+Now any Claude Code session (in any project) can convert documents via this
+service:
 
 ## Troubleshooting
 

@@ -8,6 +8,18 @@ Convert documents to Markdown using the local `docs2md` FastAPI service.
 PDFs are processed with MinerU (GPU-accelerated OCR, formula & table
 recognition); all other formats use MarkItDown.
 
+## Locating the Project
+
+This skill can be installed globally. To find the project directory, check in
+order:
+
+1. The `DOCS2MD_HOME` environment variable (set it to the project root).
+2. The directory where this skill file lives, adjusted to the project root
+   (the skill is at `<project>/.claude/skills/doc2md/SKILL.md`).
+3. Common clone paths: `~/doc2md-service`, `~/docs2md`, `~/projects/doc2md-service`.
+
+If you can't locate the project, ask the user where it is.
+
 ## Prerequisites
 
 The service must be running at `http://127.0.0.1:8000`. If it is not already
@@ -118,13 +130,16 @@ for item in r.json()["results"]:
 
 When asked to convert a document:
 
-1. Check that the service is running (`GET /health`). If it is not,
-   offer to start it with the one-click script.
-2. Determine the absolute file path.
-3. Call the appropriate endpoint (`/convert/path` for a single file,
+1. **Locate the project** — use `DOCS2MD_HOME`, the skill file path, or common
+   clone paths. If you can't find it, ask the user.
+2. Check that the service is running (`GET /health`). If it is not,
+   start it from the project root with `./start.sh` (Linux/macOS) or
+   `start.bat` (Windows).
+3. Determine the absolute file path.
+4. Call the appropriate endpoint (`/convert/path` for a single file,
    `/convert/folder` for a batch).  Use `requests` or `curl`.
-4. Report the result: engine used, output path, and a brief preview
+5. Report the result: engine used, output path, and a brief preview
    of the converted content. If the conversion fails, show the error
    and suggest fallback options (e.g., disabling MinerU).
-5. If the caller wants custom output location, pass `output_dir` in
+6. If the caller wants custom output location, pass `output_dir` in
    the request body.

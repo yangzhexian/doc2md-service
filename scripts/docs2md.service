@@ -1,0 +1,15 @@
+[Unit]
+Description=Document to Markdown Converter Service
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=__PROJECT_DIR__
+ExecStart=__VENV_DIR__/bin/uvicorn converter_service:app --host 127.0.0.1 --port __PORT__
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
