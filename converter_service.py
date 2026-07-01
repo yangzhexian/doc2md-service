@@ -633,9 +633,43 @@ async def health_check():
         gpu_available = torch.cuda.is_available()
     except Exception:
         pass
+
+    # Actually check whether MinerU is functional
+    mineru_available = False
+    try:
+        # Check 1: mineru CLI exists
+        mineru_bin = shutil.which("mineru")
+        mineru_name = "mineru.exe" if os.name == "nt" else "mineru"
+        if mineru_bin is None:
+            python_dir = Path(sys.executable).parent
+            if (python_dir / mineru_name).is_file():
+                mineru_bin = str(python_dir / mineru_name)
+        if mineru_bin is None:
+            venv_scripts = _PROJECT_ROOT / "venv" / ("Scripts" if os.name == "nt" else "bin")
+            if (venv_scripts / mineru_name).is_file():
+                mineru_bin = str(venv_scripts / mineru_name)
+
+        if mineru_bin:
+            # Check 2: models directory has required subdirectories
+            required_dirs = ["Layout", "MFR", "OCR", "TabRec"]
+            models_ok = all(
+                (_MINERU_MODELS_DIR / "models" / d).is_dir()
+                for d in required_dirs
+            )
+            if models_ok:
+                # Quick smoke test: mineru --help should return 0
+                result = subprocess.run(
+                    [mineru_bin, "--help"],
+                    capture_output=True, text=True, timeout=15,
+                    env={**os.environ, "MINERU_MODEL_SOURCE": "local"},
+                )
+                mineru_available = result.returncode == 0
+    except Exception:
+        pass
+
     return {
         "status": "ok",
-        "mineru_available": True,
+        "mineru_available": mineru_available,
         "gpu_available": gpu_available,
     }
 
