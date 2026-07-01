@@ -20,7 +20,7 @@ images, and other formats to Markdown. Powered by
   handle venv creation, dependency install, and service launch.
 - **Swagger UI** — Interactive API docs at `/docs`.
 - **Health check** — `GET /health` reports service status and GPU availability.
-- **Agent skill** — Includes a Claude Code skill (`.claude/skills/doc2md/`)
+- **Agent skill** — Includes a Claude Code skill (`.claude/skills/docs2md/`)
   so AI agents can call the service to convert documents.
 
 ## Requirements
@@ -362,14 +362,14 @@ doc2md-service/
 ├── LICENSE                # MIT License
 └── .claude/
     └── skills/
-        └── doc2md/        # Agent skill for AI-powered conversion
+        └── docs2md/       # Agent skill for AI-powered conversion
             └── SKILL.md
 ```
 
 ## Agent Skill
 
 This repository includes a [Claude Code skill](https://agentskills.io) at
-`.claude/skills/doc2md/SKILL.md`. When this project is open in Claude Code or
+`.claude/skills/docs2md/SKILL.md`. When this project is open in Claude Code or
 another Agent Skills-compatible agent, the agent can:
 
 - Start the service automatically (if not running)
@@ -381,15 +381,15 @@ make sure the service is running first with `./start.sh` or `start.bat`.
 
 ### Global Installation
 
-To use the `doc2md` skill from **any project** (not just this repo),
+To use the `docs2md` skill from **any project** (not just this repo),
 install it globally:
 
 ```bash
 # From the project root:
-cp -r .claude/skills/doc2md ~/.agents/skills/doc2md
+cp -r .claude/skills/docs2md ~/.agents/skills/docs2md
 
 # Or create a symlink:
-ln -s "$(pwd)/.claude/skills/doc2md" ~/.agents/skills/doc2md
+ln -s "$(pwd)/.claude/skills/docs2md" ~/.agents/skills/docs2md
 ```
 
 After installing, set the `DOCS2MD_HOME` environment variable so the skill

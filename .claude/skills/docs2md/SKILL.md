@@ -1,5 +1,5 @@
 ---
-name: doc2md
+name: docs2md
 description: Convert documents (PDF, DOCX, PPTX, XLSX, HTML, CSV, images) to Markdown via a local MinerU API service. Use when the user asks to convert a document, paper, or file to markdown, or wants to extract text from a PDF with formulas and tables preserved.
 ---
 
@@ -16,7 +16,7 @@ order:
 
 1. The `DOCS2MD_HOME` environment variable (set it to the project root).
 2. The directory where this skill file lives, adjusted to the project root
-   (the skill is at `<project>/.claude/skills/doc2md/SKILL.md`).
+   (the skill is at `<project>/.claude/skills/docs2md/SKILL.md`).
 3. Common clone paths: `~/doc2md-service`, `~/docs2md`, `~/projects/doc2md-service`.
 
 If you can't locate the project, ask the user where it is.
