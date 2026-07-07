@@ -13,8 +13,11 @@ images, and other formats to Markdown. Powered by
   audio, and ZIP via MarkItDown.
 - **Automatic fallback** — Falls back to MarkItDown if MinerU PDF conversion fails.
 - **Batch processing** — Convert an entire folder of documents at once.
-- **Custom output directory** — Results are saved to `<source>/docs2md/` by
-  default; override with any path.
+- **Predictable output layout** — Every file is saved to
+  `<output_dir>/<stem>/<stem>.md` with extracted images in
+  `<output_dir>/<stem>/images/`.
+- **Lightweight API responses** — The API returns status, engine, and the saved
+  file path; it never returns the full Markdown content in the JSON body.
 - **Three API modes** — Convert by local file path, file upload, or folder path.
 - **One-click start** — `start.sh` (Linux/macOS) and `start.bat` (Windows)
   handle venv creation, dependency install, and service launch.
@@ -44,34 +47,34 @@ cd doc2md-service
 
 ### 2. Download MinerU models (~1.2 GB)
 
-```bash
-mineru-models-download
-```
-
-Then copy the models into the project:
+Use the included updater to download the pipeline models and copy them into the
+project-local `mineru_models/` directory:
 
 ```bash
 # Linux / macOS
-cp -rL ~/.cache/huggingface/hub/models--opendatalab--PDF-Extract-Kit-1.0/snapshots/*/models mineru_models/
+./update.sh                # auto-select source
+./update.sh modelscope     # force ModelScope
 
-# Windows (CMD)
-xcopy /E %USERPROFILE%\.cache\huggingface\hub\models--opendatalab--PDF-Extract-Kit-1.0\snapshots\*\models mineru_models\
+# Windows
+update.bat                 # auto-select source
+update.bat modelscope      # force ModelScope
 ```
 
-> If HuggingFace is inaccessible, set `MINERU_MODEL_SOURCE=modelscope` before
-> downloading, then copy from `~/.cache/modelscope/hub/models/opendatalab/PDF-Extract-Kit-1.0/`
-> instead.
+The updater calls `mineru-models-download`, locates the downloaded cache, and
+copies the `models/` tree to `mineru_models/`. It then writes the runtime
+configuration files in `config/`.
 
 ### 3. Start
 
 ```bash
 ./start.sh      # Linux / macOS
-start.bat       # Windows
+start.bat       # Windows (background, close CMD safely)
+start.vbs       # Windows (completely silent, no window)
 ```
 
 The script handles everything automatically — virtual environment, dependencies,
 and service launch. Pass a port number to change from the default 8000:
-`./start.sh 9090`.
+`./start.sh 9090`.  On Windows, use `stop.bat` to stop the background service.
 
 Open **[http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)** for the interactive Swagger UI.
 
@@ -110,12 +113,11 @@ scripts\install-autostart.bat         # default port 8000
 scripts\install-autostart.bat 9090    # custom port
 ```
 
-This places a VBS launcher shortcut in your **Windows Startup folder**
-(`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`).
-The launcher runs `start.bat` silently — no console window appears on login.
+This creates a small batch file in your **Windows Startup folder**
+(`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`) that runs
+`start.vbs` silently on login — no console window appears.
 
-To remove autostart on Windows, delete the `docs2md.lnk` shortcut from your
-Startup folder.
+To remove autostart on Windows, delete `docs2md.bat` from your Startup folder.
 
 ## How MinerU Models Are Configured
 
@@ -124,10 +126,11 @@ directory so that no network access is needed at runtime.
 
 On startup, `converter_service.py` automatically:
 
-1. Sets `MINERU_MODEL_SOURCE=local` to use local models.
-2. Writes `mineru.json` and `magic-pdf.json` to your user home directory
-   with the correct absolute path to `mineru_models/`.
-3. Sets `MINERU_TOOLS_CONFIG_JSON` to point to the project's config template.
+1. Writes `config/mineru.json` (and a legacy `config/magic-pdf.json`) with the
+   correct absolute path to `mineru_models/`.
+2. Sets `MINERU_TOOLS_CONFIG_JSON` to point to `config/mineru.json` so the
+   MinerU CLI uses the project-local models.
+3. Sets `MINERU_MODEL_SOURCE=local` when invoking the MinerU CLI.
 
 This means the service is **self-configuring** — you just need to ensure
 `mineru_models/` exists with the downloaded model files.
@@ -160,8 +163,10 @@ Returns service status, MinerU availability, and GPU status.
 ```json
 {
   "status": "ok",
-  "mineru_available": true,
-  "gpu_available": true
+  "engines": ["mineru", "markitdown"],
+  "default_engine": "mineru",
+  "models_ready": true,
+  "cuda_available": true
 }
 ```
 
@@ -170,29 +175,36 @@ Returns service status, MinerU availability, and GPU status.
 ### POST /convert/path
 
 Convert a file by its local absolute path. Results are saved to
-`<source_parent>/docs2md/<stem>/<stem>.md` by default, with images (if any) in
-`<source_parent>/docs2md/<stem>/images/`.
+`<output_dir>/<stem>/<stem>.md` by default, with images (if any) in
+`<output_dir>/<stem>/images/`.
 
-**Request body (JSON):**
+**Request (`application/json`):**
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `file_path` | string | yes | — | Absolute path to the file |
-| `output_dir` | string | no | `<parent>/docs2md/` | Base output directory (file saved as `<dir>/<stem>/<stem>.md`) |
-| `use_mineru_for_pdf` | bool | no | `true` | Use MinerU for PDF files |
-| `mineru_method` | string | no | `"ocr"` | Parse method: `ocr`, `txt`, or `auto` |
-| `mineru_lang` | string | no | `null` | OCR language: `en`, `ch`, etc. (`null` = auto-detect) |
+| `output_dir` | string | no | parent of `file_path` | Base output directory |
+| `engine` | string | no | `mineru` | Engine override: `mineru`, `markitdown`, `auto` |
+| `method` | string | no | `"auto"` | MinerU parse method: `auto`, `ocr`, `txt` |
+| `lang` | string | no | `""` | MinerU language hint: `ch`, `en`, etc. (`""` = auto-detect) |
+| `formula_enable` | bool | no | `true` | Enable MinerU formula recognition |
+| `table_enable` | bool | no | `true` | Enable MinerU table recognition |
 
 **Response:**
 ```json
 {
-  "status": "success",
-  "markdown": "# Document Title\n\nContent...",
+  "success": true,
   "engine": "mineru",
-  "output_path": "/path/to/source/docs2md/document/document.md",
-  "detail": null
+  "output_path": "/path/to/output/document/document.md",
+  "output_dir": "/path/to/output",
+  "images_dir": "/path/to/output/document/images",
+  "fallback": false,
+  "message": "Saved to /path/to/output/document/document.md"
 }
 ```
+
+The Markdown content is **not** returned in the response. Read it from
+`output_path`.
 
 ---
 
@@ -205,10 +217,16 @@ Upload a file for conversion.
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `file` | file | yes | — | File to convert |
-| `output_dir` | string | no | `null` | Base output directory (file saved as `<dir>/<stem>/<stem>.md`) |
-| `use_mineru_for_pdf` | bool | no | `true` | Use MinerU for PDF files |
-| `mineru_method` | string | no | `"ocr"` | Parse method |
-| `mineru_lang` | string | no | `null` | OCR language |
+| `output_dir` | string | no | `<project_root>/output/` | Base output directory |
+| `engine` | string | no | `mineru` | Engine override: `mineru`, `markitdown`, `auto` |
+| `method` | string | no | `"auto"` | MinerU parse method |
+| `lang` | string | no | `""` | MinerU language hint |
+| `formula_enable` | bool | no | `true` | Enable MinerU formula recognition |
+| `table_enable` | bool | no | `true` | Enable MinerU table recognition |
+
+The default `output_dir` for uploads is the project `output/` directory, or the
+value of the `DOCS2MD_UPLOAD_OUTPUT_DIR` environment variable. This prevents
+results from being lost when the upload temp directory is cleaned up.
 
 **Response:** Same as `/convert/path`.
 
@@ -217,35 +235,32 @@ Upload a file for conversion.
 ### POST /convert/folder
 
 Batch-convert all supported files in a folder. Results are saved to
-`<folder>/docs2md/<relative_path>/<stem>/<stem>.md` by default, with images
-(if any) in `<folder>/docs2md/<relative_path>/<stem>/images/`.
+`<output_dir>/<stem>/<stem>.md` by default.
 
-**Request body (JSON):**
+**Request (`application/json`):**
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `folder_path` | string | yes | — | Absolute path to the folder |
-| `output_dir` | string | no | `<folder>/docs2md/` | Base output directory (files saved as `<dir>/<stem>/<stem>.md`) |
-| `recursive` | bool | no | `true` | Recurse into subdirectories |
-| `use_mineru_for_pdf` | bool | no | `true` | Use MinerU for PDF files |
-| `mineru_method` | string | no | `"ocr"` | Parse method |
-| `mineru_lang` | string | no | `null` | OCR language |
+| `output_dir` | string | no | `folder_path` | Base output directory |
+| `engine` | string | no | `mineru` | Engine override: `mineru`, `markitdown`, `auto` |
+| `method` | string | no | `"auto"` | MinerU parse method |
+| `lang` | string | no | `""` | MinerU language hint |
+| `formula_enable` | bool | no | `true` | Enable MinerU formula recognition |
+| `table_enable` | bool | no | `true` | Enable MinerU table recognition |
 
 **Response:**
 ```json
 {
-  "status": "success",
-  "total": 5,
-  "succeeded": 5,
-  "failed": 0,
+  "folder": "/path/to/docs",
+  "output_dir": "/path/to/docs",
   "results": [
     {
-      "file_path": "/path/to/docs/paper.pdf",
-      "stem": "paper",
+      "file": "/path/to/docs/paper.pdf",
+      "status": "ok",
       "engine": "mineru",
-      "output_path": "/path/to/docs/docs2md/paper/paper.md",
-      "status": "success",
-      "error": null
+      "output_path": "/path/to/docs/paper/paper.md",
+      "images_dir": "/path/to/docs/paper/images"
     }
   ]
 }
@@ -289,33 +304,31 @@ resp = requests.post(
     "http://127.0.0.1:8000/convert/path",
     json={
         "file_path": "/absolute/path/to/paper.pdf",
-        "use_mineru_for_pdf": True,
         "output_dir": "/custom/output/dir",  # optional
+        "engine": "mineru",                   # optional
     },
 )
 data = resp.json()
 print(f"Engine: {data['engine']}, Output: {data['output_path']}")
-print(data["markdown"][:200])
+with open(data["output_path"], "r", encoding="utf-8") as f:
+    print(f.read()[:200])
 
 # Batch-convert a folder
 resp = requests.post(
     "http://127.0.0.1:8000/convert/folder",
-    json={
-        "folder_path": "/absolute/path/to/docs/",
-        "recursive": True,
-    },
+    json={"folder_path": "/absolute/path/to/docs/"},
 )
 for item in resp.json()["results"]:
-    print(f"{item['stem']}: {item['status']} ({item['engine']})")
+    print(f"{item['file']}: {item['status']} ({item['engine']})")
 
 # Convert by file upload
 with open("/path/to/document.docx", "rb") as f:
     resp = requests.post(
         "http://127.0.0.1:8000/convert/upload",
         files={"file": f},
-        data={"use_mineru_for_pdf": "false"},
+        data={"engine": "markitdown"},
     )
-print(resp.json()["markdown"])
+print(f"Saved to: {resp.json()['output_path']}")
 ```
 
 ### curl
@@ -326,15 +339,19 @@ curl -X POST http://127.0.0.1:8000/convert/path \
   -H "Content-Type: application/json" \
   -d '{"file_path": "/path/to/document.pdf"}'
 
-# Single file with custom output directory
+# Single file with custom output directory and engine override
 curl -X POST http://127.0.0.1:8000/convert/path \
   -H "Content-Type: application/json" \
-  -d '{"file_path": "/path/to/document.pdf", "output_dir": "/output/path"}'
+  -d '{
+    "file_path": "/path/to/document.pdf",
+    "output_dir": "/output/path",
+    "engine": "mineru"
+  }'
 
 # Batch folder conversion
 curl -X POST http://127.0.0.1:8000/convert/folder \
   -H "Content-Type: application/json" \
-  -d '{"folder_path": "/path/to/docs/", "recursive": true}'
+  -d '{"folder_path": "/path/to/docs/"}'
 
 # File upload
 curl -X POST http://127.0.0.1:8000/convert/upload \
@@ -345,15 +362,30 @@ curl -X POST http://127.0.0.1:8000/convert/upload \
 
 ```
 doc2md-service/
-├── converter_service.py   # Main FastAPI application
-├── start.sh               # One-click start script (Linux / macOS)
-├── start.bat              # One-click start script (Windows)
+├── start.sh               # One-click start (Linux / macOS)
+├── start.bat              # One-click start (Windows, background)
+├── start.vbs              # Silent launcher (Windows, no window at all)
+├── stop.bat               # Stop the background service (Windows)
+├── update.sh              # Download / update MinerU models (Linux / macOS)
+├── update.bat             # Download / update MinerU models (Windows)
+├── src/                   # Application source
+│   ├── converter_service.py   # FastAPI routing
+│   ├── launcher.py            # Background launcher
+│   ├── model_manager.py       # Local model/config management
+│   └── engines/               # Pluggable converter engines
+│       ├── base.py
+│       ├── registry.py
+│       ├── mineru.py
+│       └── markitdown.py
 ├── scripts/               # Autostart helpers
 │   ├── docs2md.service        # systemd user service template
 │   ├── install-autostart.sh   # Install autostart (Linux / macOS)
 │   ├── install-autostart.bat  # Install autostart (Windows)
-│   └── docs2md-launcher.vbs   # Silent launcher (Windows)
-├── mineru.json            # MinerU config template
+│   ├── update.py              # Model update logic
+│   └── update_models.py       # Backwards-compatible wrapper
+├── config/                # Runtime configuration files
+│   ├── mineru.json            # MinerU 3.4+ config
+│   └── magic-pdf.json         # Legacy config
 ├── mineru_models/         # Model weights (~1.2 GB, not committed)
 │   └── models/            #   Downloaded separately
 ├── requirements.txt       # Python dependencies
@@ -416,7 +448,7 @@ Set the device to CPU:
 
 ```bash
 export MINERU_DEVICE_MODE=cpu
-python converter_service.py
+python src/converter_service.py
 ```
 
 ### Windows path too long errors

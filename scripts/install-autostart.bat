@@ -2,10 +2,6 @@
 REM ----------------------------------------------------------------------------
 REM Install docs2md to start automatically on Windows login
 REM ----------------------------------------------------------------------------
-REM This script:
-REM   1. Creates a VBS launcher that runs start.bat silently
-REM   2. Places a shortcut in the Windows Startup folder
-REM
 REM Usage:
 REM   scripts\install-autostart.bat                  default port 8000
 REM   scripts\install-autostart.bat 9090             custom port
@@ -16,52 +12,48 @@ set SCRIPT_DIR=%~dp0
 set PROJECT_DIR=%SCRIPT_DIR%..
 set PORT=8000
 if not "%~1"=="" set PORT=%~1
+for %%R in ("%PROJECT_DIR%") do set REAL_DIR=%%~fR
+
+set STARTUP_DIR=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup
+set STARTUP_BAT=%STARTUP_DIR%\docs2md.bat
 
 echo ==^> Installing docs2md autostart service...
-echo     Project dir : %PROJECT_DIR%
+echo     Project dir : %REAL_DIR%
 echo     Port        : %PORT%
 
 REM -- 1. Check prerequisites ------------------------------------------------
-if not exist "%PROJECT_DIR%\converter_service.py" (
-    echo ERROR: converter_service.py not found in %PROJECT_DIR%
+if not exist "%REAL_DIR%\src\converter_service.py" (
+    echo ERROR: converter_service.py not found in %REAL_DIR%\src
     exit /b 1
 )
 
-REM -- 2. Create VBS launcher with correct paths -----------------------------
-echo ==^> Creating VBS launcher...
-set VBS_PATH=%PROJECT_DIR%\scripts\docs2md-launcher.vbs
+REM -- 2. Create startup batch file in the Startup folder --------------------
+echo ==^> Creating startup file...
+(
+echo @echo off
+echo wscript.exe "%REAL_DIR%\start.vbs" %PORT%
+) > "%STARTUP_BAT%"
 
-REM -- 3. Get the Startup folder path ----------------------------------------
-echo ==^> Creating shortcut in Startup folder...
-set STARTUP_DIR=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup
-set SHORTCUT_PATH=%STARTUP_DIR%\docs2md.lnk
-
-REM -- 4. Create shortcut using PowerShell -----------------------------------
-powershell -Command "$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut('%SHORTCUT_PATH%'); $s.TargetPath = 'wscript.exe'; $s.Arguments = '%VBS_PATH%'; $s.WorkingDirectory = '%PROJECT_DIR%'; $s.WindowStyle = 7; $s.Description = 'Document to Markdown Converter'; $s.Save()"
-
-if %ERRORLEVEL% neq 0 (
-    echo ERROR: Failed to create shortcut.
-    exit /b 1
-)
-
-REM -- 5. Start the service now ----------------------------------------------
+REM -- 3. Start the service now ----------------------------------------------
 echo ==^> Starting service...
-start "" /B wscript.exe "%VBS_PATH%"
+start "" wscript.exe "%REAL_DIR%\start.vbs" %PORT%
 
-REM -- 6. Wait and verify ----------------------------------------------------
+REM -- 4. Wait and verify ----------------------------------------------------
 echo ==^> Waiting for service to start...
-timeout /t 5 /nobreak >nul
+ping -n 6 127.0.0.1 >nul
 
 echo.
 echo ================================================================
 echo   docs2md autostart installed!
-echo
+echo.
 echo   Service will start automatically on login.
 echo   API:      http://127.0.0.1:%PORT%
 echo   API docs: http://127.0.0.1:%PORT%/docs
-echo
-echo   To remove autostart, delete:
-echo     %SHORTCUT_PATH%
+echo.
+echo   Startup file:
+echo     %STARTUP_BAT%
+echo.
+echo   To remove autostart, delete the file above.
 echo ================================================================
 echo.
 

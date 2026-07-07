@@ -46,8 +46,8 @@ if [ ! -d "$SCRIPT_DIR/mineru_models" ]; then
     echo ""
     echo "========== WARNING: mineru_models/ directory not found! =========="
     echo "  PDF conversion via MinerU will NOT work."
-    echo "  Download models first: mineru-models-download"
-    echo "  Then copy them to: $SCRIPT_DIR/mineru_models/"
+    echo "  Download models first: ./update.sh"
+    echo "  (or ./update.sh modelscope if HuggingFace is inaccessible)"
     echo "=================================================================="
     echo ""
 fi
@@ -62,4 +62,4 @@ echo "  Press Ctrl+C to stop"
 echo "=================================================================="
 echo ""
 
-uvicorn converter_service:app --host "$HOST" --port "$PORT"
+cd "$SCRIPT_DIR/src" && uvicorn converter_service:app --host "$HOST" --port "$PORT"

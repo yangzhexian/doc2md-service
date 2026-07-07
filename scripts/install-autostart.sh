@@ -22,8 +22,8 @@ echo "    Venv dir    : $VENV_DIR"
 echo "    Port        : $PORT"
 
 # -- 1. Check prerequisites ------------------------------------------------
-if [ ! -f "$PROJECT_DIR/converter_service.py" ]; then
-    echo "ERROR: converter_service.py not found in $PROJECT_DIR"
+if [ ! -f "$PROJECT_DIR/src/converter_service.py" ]; then
+    echo "ERROR: converter_service.py not found in $PROJECT_DIR/src"
     exit 1
 fi
 
