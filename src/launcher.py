@@ -22,6 +22,14 @@ def log(msg: str) -> None:
         f.write(f"{msg}\n")
 
 
+def _requirements_hash() -> str:
+    import hashlib
+
+    return hashlib.sha256(
+        (PROJECT_DIR / "requirements.txt").read_bytes()
+    ).hexdigest()
+
+
 def main() -> None:
     port = sys.argv[1] if len(sys.argv) > 1 else "8000"
     log(f"=== launcher.py port={port} ===")
@@ -37,9 +45,11 @@ def main() -> None:
         )
         log("Venv created.")
 
-    # 2. Install deps if needed
-    if not DEPS_FLAG.is_file():
-        log("Installing dependencies...")
+    # 2. Install / upgrade deps when requirements.txt changes
+    req_hash = _requirements_hash()
+    installed_hash = DEPS_FLAG.read_text(encoding="utf-8").strip() if DEPS_FLAG.is_file() else ""
+    if installed_hash != req_hash:
+        log("Installing / upgrading dependencies...")
         subprocess.run(
             [str(VENV_DIR / "Scripts" / "pip"), "install", "--upgrade", "pip", "--quiet"],
             check=True, capture_output=True,
@@ -49,7 +59,7 @@ def main() -> None:
              str(PROJECT_DIR / "requirements.txt")],
             check=True, capture_output=True,
         )
-        DEPS_FLAG.write_text("", encoding="utf-8")
+        DEPS_FLAG.write_text(req_hash, encoding="utf-8")
         log("Dependencies installed.")
 
     # 3. Skip if already running

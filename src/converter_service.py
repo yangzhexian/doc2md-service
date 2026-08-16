@@ -18,13 +18,26 @@ from typing import Any
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import PlainTextResponse
 from loguru import logger
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from engines import ConvertOptions, ConvertStatusResponse, get_engine, list_engines  # noqa: E402
-from model_manager import pipeline_models_look_complete, write_runtime_configs  # noqa: E402
+from engines import (  # noqa: E402
+    ConvertOptions,
+    ConvertResult,
+    ConvertStatusResponse,
+    get_engine,
+    list_engines,
+    normalize_mineru_backend,
+    normalize_mineru_effort,
+    normalize_mineru_lang,
+)
+from model_manager import (  # noqa: E402
+    pipeline_models_look_complete,
+    vlm_models_present,
+    write_runtime_configs,
+)
 
 DEFAULT_ENGINE = os.environ.get("DOCS2MD_ENGINE", "mineru")
 # Uploaded files have no natural parent directory on the server, so they land
@@ -34,7 +47,61 @@ DEFAULT_UPLOAD_OUTPUT_DIR = Path(
 )
 
 
-class ConvertPathRequest(BaseModel):
+class _MinerUFields(BaseModel):
+    """Shared MinerU tuning fields and validators for request models."""
+
+    method: str = Field("auto", description="MinerU parse method: auto, ocr, txt")
+    lang: str = Field("", description="MinerU OCR language hint")
+    formula_enable: bool = Field(True, description="MinerU formula recognition")
+    table_enable: bool = Field(True, description="MinerU table recognition")
+    backend: str = Field(
+        "auto",
+        description=(
+            "MinerU backend: auto, pipeline, vlm-engine, hybrid-engine, "
+            "vlm-http-client, hybrid-http-client"
+        ),
+    )
+    effort: str = Field("medium", description="Hybrid backend effort: medium, high")
+    server_url: str | None = Field(
+        None, description="Remote MinerU server URL (required for *-http-client backends)"
+    )
+    start_page: int = Field(0, ge=0, description="First page to parse (0-based)")
+    end_page: int | None = Field(None, ge=0, description="Last page to parse (0-based, inclusive)")
+
+    @field_validator("lang")
+    @classmethod
+    def _validate_lang(cls, v: str) -> str:
+        try:
+            return normalize_mineru_lang(v)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+
+    @field_validator("backend")
+    @classmethod
+    def _validate_backend(cls, v: str) -> str:
+        try:
+            return normalize_mineru_backend(v)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+
+    @field_validator("effort")
+    @classmethod
+    def _validate_effort(cls, v: str) -> str:
+        try:
+            return normalize_mineru_effort(v)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+
+    @field_validator("end_page")
+    @classmethod
+    def _validate_page_range(cls, v: int | None, info: Any) -> int | None:
+        start = info.data.get("start_page", 0)
+        if v is not None and start and v < start:
+            raise ValueError("end_page must be >= start_page")
+        return v
+
+
+class ConvertPathRequest(_MinerUFields):
     """JSON body for /convert/path."""
 
     file_path: str = Field(..., description="Absolute path to the input file")
@@ -42,13 +109,9 @@ class ConvertPathRequest(BaseModel):
         None, description="Base output directory; defaults to parent of file_path"
     )
     engine: str | None = Field(None, description="Engine override")
-    method: str = Field("auto", description="MinerU parse method: auto, ocr, txt")
-    lang: str = Field("", description="MinerU language hint")
-    formula_enable: bool = Field(True, description="MinerU formula recognition")
-    table_enable: bool = Field(True, description="MinerU table recognition")
 
 
-class ConvertFolderRequest(BaseModel):
+class ConvertFolderRequest(_MinerUFields):
     """JSON body for /convert/folder."""
 
     folder_path: str = Field(..., description="Absolute path to the input folder")
@@ -56,10 +119,6 @@ class ConvertFolderRequest(BaseModel):
         None, description="Base output directory; defaults to folder_path"
     )
     engine: str | None = Field(None, description="Engine override")
-    method: str = Field("auto", description="MinerU parse method: auto, ocr, txt")
-    lang: str = Field("", description="MinerU language hint")
-    formula_enable: bool = Field(True, description="MinerU formula recognition")
-    table_enable: bool = Field(True, description="MinerU table recognition")
 
 
 def _pick_engine(requested: str | None, file_path: Path) -> str:
@@ -89,7 +148,7 @@ async def _lifespan(app: FastAPI):
 app = FastAPI(
     title="docs2md",
     description="Convert documents (PDF, DOCX, PPTX, XLSX, images, etc.) to Markdown via local engines.",
-    version="3.5.0",
+    version="3.6.0",
     lifespan=_lifespan,
 )
 
@@ -99,6 +158,7 @@ class HealthResponse(BaseModel):
     engines: list[str]
     default_engine: str
     models_ready: bool
+    vlm_models_ready: bool = Field(default=False)
     cuda_available: bool = Field(default=False)
 
 
@@ -135,6 +195,7 @@ def health() -> HealthResponse:
         engines=engines,
         default_engine=DEFAULT_ENGINE,
         models_ready=pipeline_models_look_complete(),
+        vlm_models_ready=vlm_models_present(),
         cuda_available=cuda,
     )
 
@@ -145,12 +206,22 @@ def _build_options(
     lang: str = "",
     formula_enable: bool = True,
     table_enable: bool = True,
+    backend: str = "auto",
+    effort: str = "medium",
+    server_url: str | None = None,
+    start_page: int = 0,
+    end_page: int | None = None,
 ) -> dict[str, Any]:
     return {
         "method": method,
         "lang": lang,
         "formula_enable": formula_enable,
         "table_enable": table_enable,
+        "backend": backend,
+        "effort": effort,
+        "server_url": server_url,
+        "start_page": start_page,
+        "end_page": end_page,
     }
 
 
@@ -174,10 +245,32 @@ def _run_conversion(
         lang=(options or {}).get("lang", ""),
         formula_enable=(options or {}).get("formula_enable", True),
         table_enable=(options or {}).get("table_enable", True),
+        backend=(options or {}).get("backend", "auto"),
+        effort=(options or {}).get("effort", "medium"),
+        server_url=(options or {}).get("server_url"),
+        start_page=(options or {}).get("start_page", 0),
+        end_page=(options or {}).get("end_page"),
     )
 
     engine = engine_cls()
-    result = engine.convert(file_path, opts)
+
+    # Configuration problems (missing models, missing server URL, ...) are
+    # client errors: report them without trying a fallback engine.
+    try:
+        engine.validate_options(opts)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    try:
+        result = engine.convert(file_path, opts)
+    except Exception as exc:
+        logger.exception(f"{chosen} engine conversion raised an exception")
+        result = ConvertResult(
+            markdown="",
+            engine=chosen,
+            output_path="",
+            error=f"{chosen} error: {exc}",
+        )
 
     # Fallback to MarkItDown when MinerU fails.
     if result.error and chosen == "mineru" and get_engine("markitdown") is not None:
@@ -205,6 +298,27 @@ def _run_conversion(
     )
 
 
+def _normalize_form_lang(lang: str) -> str:
+    try:
+        return normalize_mineru_lang(lang)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _normalize_form_backend(backend: str) -> str:
+    try:
+        return normalize_mineru_backend(backend)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _normalize_form_effort(effort: str) -> str:
+    try:
+        return normalize_mineru_effort(effort)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/convert/path", response_model=ConvertResponse)
 def convert_path(request: ConvertPathRequest) -> ConvertResponse:
     """Convert a file already on disk."""
@@ -218,6 +332,11 @@ def convert_path(request: ConvertPathRequest) -> ConvertResponse:
         lang=request.lang,
         formula_enable=request.formula_enable,
         table_enable=request.table_enable,
+        backend=request.backend,
+        effort=request.effort,
+        server_url=request.server_url,
+        start_page=request.start_page,
+        end_page=request.end_page,
     )
     status = _run_conversion(src, engine_name=request.engine, output_dir=out_dir, options=options)
     return ConvertResponse(**status.__dict__)
@@ -232,10 +351,21 @@ def convert_upload(
     lang: str = Form(""),
     formula_enable: bool = Form(True),
     table_enable: bool = Form(True),
+    backend: str = Form("auto"),
+    effort: str = Form("medium"),
+    server_url: str | None = Form(None),
+    start_page: int = Form(0),
+    end_page: int | None = Form(None),
 ) -> ConvertResponse:
     """Convert an uploaded file."""
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
+
+    lang = _normalize_form_lang(lang)
+    backend = _normalize_form_backend(backend)
+    effort = _normalize_form_effort(effort)
+    if end_page is not None and start_page and end_page < start_page:
+        raise HTTPException(status_code=400, detail="end_page must be >= start_page")
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="docs2md_upload_"))
     try:
@@ -258,6 +388,11 @@ def convert_upload(
             lang=lang,
             formula_enable=formula_enable,
             table_enable=table_enable,
+            backend=backend,
+            effort=effort,
+            server_url=server_url,
+            start_page=start_page,
+            end_page=end_page,
         )
         status = _run_conversion(
             dest,
@@ -283,6 +418,11 @@ def convert_folder(request: ConvertFolderRequest) -> dict[str, Any]:
         lang=request.lang,
         formula_enable=request.formula_enable,
         table_enable=request.table_enable,
+        backend=request.backend,
+        effort=request.effort,
+        server_url=request.server_url,
+        start_page=request.start_page,
+        end_page=request.end_page,
     )
 
     results: list[dict[str, Any]] = []
