@@ -5,14 +5,24 @@ images, and other formats to Markdown. Powered by
 **[MinerU](https://github.com/opendatalab/MinerU)** (PDF) and
 **[MarkItDown](https://github.com/microsoft/markitdown)** (all other formats).
 
+Tracked upstream versions: **MinerU 3.4.5+** and **markitdown 0.1.7+**.
+
 ## Features
 
 - **High-quality PDF conversion** — MinerU with GPU-accelerated OCR handles
   complex layouts, math formulas, tables, and multi-column papers.
+- **Multiple MinerU backends** — `pipeline` (classic), `vlm-engine`
+  (MinerU2.5-Pro VLM), and `hybrid-engine` (pipeline + VLM cross-verification,
+  the upstream default and the recommended choice for academic papers).
+  `backend=auto` picks the highest-accuracy backend whose models are installed.
+- **Remote MinerU servers** — `vlm-http-client` / `hybrid-http-client`
+  backends can talk to an OpenAI-compatible MinerU API instead of local GPUs.
 - **Multi-format support** — DOCX, PPTX, XLSX, HTML, CSV, JSON, XML, images,
   audio, and ZIP via MarkItDown.
 - **Automatic fallback** — Falls back to MarkItDown if MinerU PDF conversion fails.
 - **Batch processing** — Convert an entire folder of documents at once.
+- **Page ranges** — Re-convert just a slice of a long paper (`start_page` /
+  `end_page`).
 - **Predictable output layout** — Every file is saved to
   `<output_dir>/<stem>/<stem>.md` with extracted images in
   `<output_dir>/<stem>/images/`.
@@ -20,9 +30,11 @@ images, and other formats to Markdown. Powered by
   file path; it never returns the full Markdown content in the JSON body.
 - **Three API modes** — Convert by local file path, file upload, or folder path.
 - **One-click start** — `start.sh` (Linux/macOS) and `start.bat` (Windows)
-  handle venv creation, dependency install, and service launch.
+  handle venv creation, dependency install, and service launch. Dependencies
+  are reinstalled automatically whenever `requirements.txt` changes.
 - **Swagger UI** — Interactive API docs at `/docs`.
-- **Health check** — `GET /health` reports service status and GPU availability.
+- **Health check** — `GET /health` reports service status, model availability,
+  and GPU status.
 - **Agent skill** — Includes a Claude Code skill (`.claude/skills/docs2md/`)
   so AI agents can call the service to convert documents.
 
@@ -31,10 +43,12 @@ images, and other formats to Markdown. Powered by
 | Requirement | Minimum |
 |---|---|
 | Operating System | Linux / Windows / macOS 14+ |
-| Python | 3.10 – 3.13 |
+| Python | 3.10 – 3.13 (MinerU requires `<3.14`) |
 | RAM | 16 GB (32 GB recommended) |
 | Disk (free space) | 20 GB (SSD recommended) |
 | GPU VRAM (optional) | 4 GB for GPU acceleration |
+| MinerU | `>= 3.4.5` (installed automatically) |
+| MarkItDown | `>= 0.1.7` (installed automatically) |
 
 ## Quick Start
 
@@ -45,24 +59,33 @@ git clone https://github.com/yangzhexian/doc2md-service.git
 cd doc2md-service
 ```
 
-### 2. Download MinerU models (~1.2 GB)
+### 2. Download MinerU models
 
-Use the included updater to download the pipeline models and copy them into the
+Use the included updater to download the model weights and copy them into the
 project-local `mineru_models/` directory:
 
 ```bash
 # Linux / macOS
-./update.sh                # auto-select source
+./update.sh                # pipeline models (classic backend), auto source
 ./update.sh modelscope     # force ModelScope
+./update.sh auto all       # pipeline + VLM models (hybrid backend, ~3.6 GB total)
 
 # Windows
-update.bat                 # auto-select source
+update.bat                 # pipeline models, auto source
 update.bat modelscope      # force ModelScope
+update.bat auto all        # pipeline + VLM models
 ```
 
+| Model set | Size | Needed for |
+|---|---|---|
+| `pipeline` | ~1.2 GB | `pipeline` backend (layout / formula / OCR / table models) |
+| `vlm` | ~2.4 GB | `vlm-engine` and `hybrid-engine` backends (MinerU2.5-Pro-2605-1.2B) |
+
 The updater calls `mineru-models-download`, locates the downloaded cache, and
-copies the `models/` tree to `mineru_models/`. It then writes the runtime
-configuration files in `config/`.
+copies the model tree into `mineru_models/`. It then writes the runtime
+configuration files in `config/`. The **pipeline** models are enough to start;
+add the **VLM** models if you want the higher-accuracy hybrid backend
+(recommended for academic papers).
 
 ### 3. Start
 
@@ -127,7 +150,9 @@ directory so that no network access is needed at runtime.
 On startup, `converter_service.py` automatically:
 
 1. Writes `config/mineru.json` (and a legacy `config/magic-pdf.json`) with the
-   correct absolute path to `mineru_models/`.
+   correct absolute paths to `mineru_models/` — `models-dir.pipeline` for the
+   classic pipeline models and `models-dir.vlm` for the VLM model (when
+   present).
 2. Sets `MINERU_TOOLS_CONFIG_JSON` to point to `config/mineru.json` so the
    MinerU CLI uses the project-local models.
 3. Sets `MINERU_MODEL_SOURCE=local` when invoking the MinerU CLI.
@@ -139,25 +164,48 @@ This means the service is **self-configuring** — you just need to ensure
 
 ```
 mineru_models/
-└── models/
-    ├── Layout/
-    │   └── PP-DocLayoutV2/
-    ├── MFR/
-    │   └── unimernet_hf_small_2503/
-    ├── OCR/
-    │   └── paddleocr_torch/
-    ├── TabCls/
-    │   └── paddle_table_cls/
-    └── TabRec/
-        ├── SlanetPlus/
-        └── UnetStructure/
+├── models/                        # pipeline models (PDF-Extract-Kit-1.0)
+│   ├── Layout/
+│   │   └── PP-DocLayoutV2/
+│   ├── MFR/
+│   │   ├── unimernet_hf_small_2503/
+│   │   └── pp_formulanet_plus_m/
+│   ├── OCR/
+│   │   └── paddleocr_torch/
+│   ├── TabCls/
+│   │   └── paddle_table_cls/
+│   └── TabRec/
+│       ├── SlanetPlus/
+│       └── UnetStructure/
+└── vlm/                           # VLM model (optional)
+    └── MinerU2.5-Pro-2605-1.2B files (config.json + safetensors)
 ```
+
+## Choosing a MinerU Backend
+
+The `backend` request field selects the MinerU parsing engine. `auto` (the
+default) picks the best one whose models are installed:
+
+| Backend | Local models | Quality | Notes |
+|---|---|---|---|
+| `auto` | — | best available | `hybrid-engine` when both model sets are installed, else `pipeline` |
+| `pipeline` | pipeline | good | Classic layout + formula + OCR + table pipeline; fastest to set up |
+| `hybrid-engine` | pipeline + vlm | **best** | Pipeline + VLM cross-verification; upstream default; recommended for academic papers |
+| `vlm-engine` | vlm | high | VLM-only parsing (MinerU2.5-Pro) |
+| `vlm-http-client` | none | high | Uses a remote OpenAI-compatible MinerU server (`server_url` required) |
+| `hybrid-http-client` | pipeline | high | Local pipeline + remote VLM server (`server_url` required) |
+
+For academic papers (math-heavy, dense tables, complex two-column layouts),
+download both model sets (`./update.sh auto all`) and let `backend=auto` use
+`hybrid-engine`. Set `effort=high` for maximum accuracy at the cost of speed;
+`effort=medium` (default) is a good accuracy/speed balance. Hybrid image/chart
+analysis is enabled on `effort=high`.
 
 ## API Reference
 
 ### GET /health
 
-Returns service status, MinerU availability, and GPU status.
+Returns service status, MinerU model availability, and GPU status.
 
 **Response:**
 ```json
@@ -166,9 +214,14 @@ Returns service status, MinerU availability, and GPU status.
   "engines": ["mineru", "markitdown"],
   "default_engine": "mineru",
   "models_ready": true,
+  "vlm_models_ready": true,
   "cuda_available": true
 }
 ```
+
+- `models_ready` — pipeline models (layout/formula/OCR/table) are present.
+- `vlm_models_ready` — the MinerU2.5-Pro VLM model is present (enables the
+  `vlm-engine` / `hybrid-engine` backends).
 
 ---
 
@@ -186,9 +239,14 @@ Convert a file by its local absolute path. Results are saved to
 | `output_dir` | string | no | parent of `file_path` | Base output directory |
 | `engine` | string | no | `mineru` | Engine override: `mineru`, `markitdown`, `auto` |
 | `method` | string | no | `"auto"` | MinerU parse method: `auto`, `ocr`, `txt` |
-| `lang` | string | no | `""` | MinerU language hint: `ch`, `en`, etc. (`""` = auto-detect) |
+| `lang` | string | no | `""` | MinerU OCR language hint (see [Languages](#ocr-languages)) |
 | `formula_enable` | bool | no | `true` | Enable MinerU formula recognition |
 | `table_enable` | bool | no | `true` | Enable MinerU table recognition |
+| `backend` | string | no | `"auto"` | MinerU backend: `auto`, `pipeline`, `vlm-engine`, `hybrid-engine`, `vlm-http-client`, `hybrid-http-client` |
+| `effort` | string | no | `"medium"` | Hybrid backend effort: `medium`, `high` |
+| `server_url` | string | no | — | Remote MinerU server URL (required for `*-http-client` backends) |
+| `start_page` | int | no | `0` | First page to parse (0-based) |
+| `end_page` | int | no | — | Last page to parse (0-based, inclusive) |
 
 **Response:**
 ```json
@@ -220,9 +278,14 @@ Upload a file for conversion.
 | `output_dir` | string | no | `<project_root>/output/` | Base output directory |
 | `engine` | string | no | `mineru` | Engine override: `mineru`, `markitdown`, `auto` |
 | `method` | string | no | `"auto"` | MinerU parse method |
-| `lang` | string | no | `""` | MinerU language hint |
+| `lang` | string | no | `""` | MinerU OCR language hint |
 | `formula_enable` | bool | no | `true` | Enable MinerU formula recognition |
 | `table_enable` | bool | no | `true` | Enable MinerU table recognition |
+| `backend` | string | no | `"auto"` | MinerU backend (same choices as `/convert/path`) |
+| `effort` | string | no | `"medium"` | Hybrid backend effort: `medium`, `high` |
+| `server_url` | string | no | — | Remote MinerU server URL |
+| `start_page` | int | no | `0` | First page to parse (0-based) |
+| `end_page` | int | no | — | Last page to parse (0-based, inclusive) |
 
 The default `output_dir` for uploads is the project `output/` directory, or the
 value of the `DOCS2MD_UPLOAD_OUTPUT_DIR` environment variable. This prevents
@@ -245,9 +308,14 @@ Batch-convert all supported files in a folder. Results are saved to
 | `output_dir` | string | no | `folder_path` | Base output directory |
 | `engine` | string | no | `mineru` | Engine override: `mineru`, `markitdown`, `auto` |
 | `method` | string | no | `"auto"` | MinerU parse method |
-| `lang` | string | no | `""` | MinerU language hint |
+| `lang` | string | no | `""` | MinerU OCR language hint |
 | `formula_enable` | bool | no | `true` | Enable MinerU formula recognition |
 | `table_enable` | bool | no | `true` | Enable MinerU table recognition |
+| `backend` | string | no | `"auto"` | MinerU backend (same choices as `/convert/path`) |
+| `effort` | string | no | `"medium"` | Hybrid backend effort: `medium`, `high` |
+| `server_url` | string | no | — | Remote MinerU server URL |
+| `start_page` | int | no | `0` | First page to parse (0-based) |
+| `end_page` | int | no | — | Last page to parse (0-based, inclusive) |
 
 **Response:**
 ```json
@@ -266,6 +334,30 @@ Batch-convert all supported files in a folder. Results are saved to
 }
 ```
 
+### OCR Languages
+
+The `lang` field is a hint for MinerU's OCR (pipeline-based backends only).
+MinerU 3.4.5+ accepts these canonical values; common aliases (e.g. `en`, `ru`,
+`ar`, `hi`) are mapped automatically. `""` uses the CLI default.
+
+| Value | Covers |
+|---|---|
+| `ch` *(default)* | Chinese, English, Japanese, Chinese Traditional, Latin |
+| `ch_server` | Same as `ch` (server model variant) |
+| `korean` | Korean, English |
+| `ta` / `te` / `ka` / `th` | Tamil / Telugu / Kannada / Thai (+ English) |
+| `el` | Greek, English |
+| `arabic` | Arabic, Persian, Uyghur, Urdu, Kurdish, English |
+| `east_slavic` | Russian, Belarusian, Ukrainian, English |
+| `cyrillic` | Russian, Serbian, Bulgarian, Mongolian, Kazakh, and more |
+| `devanagari` | Hindi, Marathi, Nepali, Sanskrit, and more |
+
+Aliases: `en`/`japan`/`latin` → `ch`; `ru`/`be`/`uk` → `east_slavic`;
+`ar`/`fa`/`ur` → `arabic`; `bg`/`mn`/`kk` → `cyrillic`; `hi`/`mr`/`ne` →
+`devanagari`.
+
+---
+
 ### Error Responses
 
 **404 — File not found:**
@@ -273,9 +365,17 @@ Batch-convert all supported files in a folder. Results are saved to
 { "detail": "File not found: /path/to/nonexistent.pdf" }
 ```
 
-**400 — Conversion error:**
+**400 — Invalid request or missing configuration:**
 ```json
-{ "detail": "MinerU error: ... MarkItDown fallback error: ..." }
+{ "detail": "MinerU VLM model (MinerU2.5-Pro-2605-1.2B) is missing but is required by the selected backend. Download it with ./update.sh auto all (or update.bat auto all)." }
+```
+
+Invalid `lang` / `backend` / `effort` values and missing remote `server_url`
+also return 400 with an actionable message.
+
+**500 — Conversion error (after fallback):**
+```json
+{ "detail": "mineru error: ... markitdown error: ..." }
 ```
 
 ## Supported File Formats
@@ -313,6 +413,27 @@ print(f"Engine: {data['engine']}, Output: {data['output_path']}")
 with open(data["output_path"], "r", encoding="utf-8") as f:
     print(f.read()[:200])
 
+# Academic paper with the high-accuracy hybrid backend
+resp = requests.post(
+    "http://127.0.0.1:8000/convert/path",
+    json={
+        "file_path": "/absolute/path/to/paper.pdf",
+        "backend": "hybrid-engine",   # pipeline + VLM cross-verification
+        "effort": "high",             # max accuracy, enables chart analysis
+        "lang": "en",                 # English (aliases to ch)
+    },
+)
+
+# Re-convert only pages 3-8 of a long paper
+resp = requests.post(
+    "http://127.0.0.1:8000/convert/path",
+    json={
+        "file_path": "/absolute/path/to/thesis.pdf",
+        "start_page": 2,   # 0-based
+        "end_page": 7,     # 0-based, inclusive
+    },
+)
+
 # Batch-convert a folder
 resp = requests.post(
     "http://127.0.0.1:8000/convert/folder",
@@ -345,7 +466,9 @@ curl -X POST http://127.0.0.1:8000/convert/path \
   -d '{
     "file_path": "/path/to/document.pdf",
     "output_dir": "/output/path",
-    "engine": "mineru"
+    "engine": "mineru",
+    "backend": "hybrid-engine",
+    "effort": "high"
   }'
 
 # Batch folder conversion
@@ -386,8 +509,9 @@ doc2md-service/
 ├── config/                # Runtime configuration files
 │   ├── mineru.json            # MinerU 3.4+ config
 │   └── magic-pdf.json         # Legacy config
-├── mineru_models/         # Model weights (~1.2 GB, not committed)
-│   └── models/            #   Downloaded separately
+├── mineru_models/         # Model weights (~1.2 GB pipeline + ~2.4 GB VLM, not committed)
+│   ├── models/            #   Pipeline models (downloaded separately)
+│   └── vlm/               #   VLM model (optional, for hybrid backend)
 ├── requirements.txt       # Python dependencies
 ├── README.md              # This file
 ├── .gitignore             # Git ignore rules
@@ -435,12 +559,36 @@ export DOCS2MD_HOME=/path/to/doc2md-service
 Now any Claude Code session (in any project) can convert documents via this
 service:
 
+## Updating
+
+To follow upstream MinerU / MarkItDown releases, pull the latest version of
+this repo and restart the service — the start scripts detect the changed
+`requirements.txt` and reinstall dependencies automatically:
+
+```bash
+git pull
+./start.sh            # reinstalls deps when requirements.txt changed
+./update.sh auto all  # refresh model weights when MinerU changed its models
+```
+
+You can also upgrade dependencies manually inside the venv:
+
+```bash
+venv/bin/pip install -U "mineru[all]" "markitdown[all]"
+```
+
 ## Troubleshooting
 
 ### "MinerU models directory not found"
 
 Ensure you have completed Step 2 (Download MinerU models) and the
 `mineru_models/models/` directory exists in the project root.
+
+### "MinerU VLM model ... is missing"
+
+The `vlm-engine` / `hybrid-engine` backends need the MinerU2.5-Pro model.
+Download it with `./update.sh auto all`, or switch `backend` to `pipeline`.
+`backend=auto` never selects a backend whose models are missing.
 
 ### "CUDA out of memory" or GPU errors
 
@@ -450,6 +598,22 @@ Set the device to CPU:
 export MINERU_DEVICE_MODE=cpu
 python src/converter_service.py
 ```
+
+### Conversions time out on long documents
+
+The MinerU CLI timeout defaults to 1800 seconds. Override it with the
+`DOCS2MD_MINERU_TIMEOUT` environment variable:
+
+```bash
+export DOCS2MD_MINERU_TIMEOUT=3600
+```
+
+### "Language ... not supported" errors
+
+MinerU 3.4.5+ accepts a fixed set of OCR languages (see
+[OCR Languages](#ocr-languages)); unsupported values are rejected with a 400
+response. Common aliases such as `en`, `ru`, `ar`, and `hi` are mapped
+automatically.
 
 ### Windows path too long errors
 

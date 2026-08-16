@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# Download or update local MinerU pipeline models.
+# Download or update local MinerU models.
 # Usage:
-#   ./update.sh                auto-select source
-#   ./update.sh huggingface    force HuggingFace
-#   ./update.sh modelscope     force ModelScope
+#   ./update.sh                     pipeline models, auto-select source
+#   ./update.sh huggingface         force HuggingFace
+#   ./update.sh modelscope          force ModelScope
+#   ./update.sh auto all            pipeline + VLM models (hybrid backend)
+#   ./update.sh auto vlm            VLM model only
+#
+# model-type: pipeline (default) | vlm | all
 
 set -euo pipefail
 
@@ -19,4 +23,5 @@ else
 fi
 
 SOURCE="${1:-auto}"
-"$PYTHON" "$SCRIPT_DIR/scripts/update.py" "$SOURCE"
+MODEL_TYPE="${2:-pipeline}"
+"$PYTHON" "$SCRIPT_DIR/scripts/update.py" "$SOURCE" --model-type "$MODEL_TYPE"

@@ -2,7 +2,8 @@
 """Backwards-compatible wrapper around scripts/update.py.
 
 This file is kept for existing users/workflows. New callers should use
-``python scripts/update.py`` directly.
+``python scripts/update.py [source] [--model-type pipeline|vlm|all]``
+directly.
 """
 
 from __future__ import annotations
