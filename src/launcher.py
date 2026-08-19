@@ -14,6 +14,7 @@ from pathlib import Path
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 VENV_DIR = PROJECT_DIR / "venv"
 DEPS_FLAG = VENV_DIR / ".deps_installed"
+DEPS_FAILURE_FLAG = VENV_DIR / ".deps_install_failed"
 LOG_FILE = PROJECT_DIR / "launcher.log"
 
 
@@ -28,6 +29,50 @@ def _requirements_hash() -> str:
     return hashlib.sha256(
         (PROJECT_DIR / "requirements.txt").read_bytes()
     ).hexdigest()
+
+
+def _tail(value: str, limit: int = 4000) -> str:
+    """Keep launcher.log useful when a package manager emits a large error."""
+    value = value.strip()
+    return value if len(value) <= limit else "..." + value[-limit:]
+
+
+def _runtime_dependencies_available(venv_python: Path) -> bool:
+    """Check whether the already-installed runtime can start the service."""
+    check = subprocess.run(
+        [
+            str(venv_python),
+            "-c",
+            "import fastapi, uvicorn, markitdown, mineru, pydantic, multipart, loguru",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if check.returncode != 0:
+        log("Existing runtime dependency check failed:")
+        log(_tail(check.stderr or check.stdout))
+        return False
+    return True
+
+
+def _install_dependencies(venv_python: Path, req_hash: str) -> None:
+    """Install dependencies and log package-manager failures in full enough detail."""
+    pip = VENV_DIR / "Scripts" / "pip.exe"
+    commands = [
+        [str(pip), "install", "--upgrade", "pip", "--quiet"],
+        [str(pip), "install", "-r", str(PROJECT_DIR / "requirements.txt")],
+    ]
+    for command in commands:
+        result = subprocess.run(command, capture_output=True, text=True)
+        if result.returncode != 0:
+            log(f"Command failed ({result.returncode}): {' '.join(command)}")
+            log(_tail(result.stdout))
+            log(_tail(result.stderr))
+            raise RuntimeError(f"dependency command failed with exit code {result.returncode}")
+    DEPS_FLAG.write_text(req_hash, encoding="utf-8")
+    if DEPS_FAILURE_FLAG.exists():
+        DEPS_FAILURE_FLAG.unlink()
+    log("Dependencies installed.")
 
 
 def main() -> None:
@@ -49,18 +94,21 @@ def main() -> None:
     req_hash = _requirements_hash()
     installed_hash = DEPS_FLAG.read_text(encoding="utf-8").strip() if DEPS_FLAG.is_file() else ""
     if installed_hash != req_hash:
-        log("Installing / upgrading dependencies...")
-        subprocess.run(
-            [str(VENV_DIR / "Scripts" / "pip"), "install", "--upgrade", "pip", "--quiet"],
-            check=True, capture_output=True,
-        )
-        subprocess.run(
-            [str(VENV_DIR / "Scripts" / "pip"), "install", "-r",
-             str(PROJECT_DIR / "requirements.txt")],
-            check=True, capture_output=True,
-        )
-        DEPS_FLAG.write_text(req_hash, encoding="utf-8")
-        log("Dependencies installed.")
+        failed_hash = DEPS_FAILURE_FLAG.read_text(encoding="utf-8").strip() if DEPS_FAILURE_FLAG.is_file() else ""
+        if failed_hash == req_hash:
+            log("Skipping dependency retry for unchanged requirements; previous install failed.")
+        else:
+            log("Installing / upgrading dependencies...")
+            try:
+                _install_dependencies(venv_python, req_hash)
+            except Exception as exc:
+                log(f"Dependency installation failed: {exc}")
+                DEPS_FAILURE_FLAG.write_text(req_hash, encoding="utf-8")
+                if _runtime_dependencies_available(venv_python):
+                    log("Using the existing runtime and continuing to start the service.")
+                else:
+                    log("Existing runtime is incomplete; service will not start.")
+                    return
 
     # 3. Skip if already running
     try:
