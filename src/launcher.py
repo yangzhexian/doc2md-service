@@ -14,7 +14,6 @@ from pathlib import Path
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 VENV_DIR = PROJECT_DIR / "venv"
 DEPS_FLAG = VENV_DIR / ".deps_installed"
-DEPS_FAILURE_FLAG = VENV_DIR / ".deps_install_failed"
 LOG_FILE = PROJECT_DIR / "launcher.log"
 
 
@@ -70,8 +69,6 @@ def _install_dependencies(venv_python: Path, req_hash: str) -> None:
             log(_tail(result.stderr))
             raise RuntimeError(f"dependency command failed with exit code {result.returncode}")
     DEPS_FLAG.write_text(req_hash, encoding="utf-8")
-    if DEPS_FAILURE_FLAG.exists():
-        DEPS_FAILURE_FLAG.unlink()
     log("Dependencies installed.")
 
 
@@ -90,25 +87,21 @@ def main() -> None:
         )
         log("Venv created.")
 
-    # 2. Install / upgrade deps when requirements.txt changes
+    # 2. Install / upgrade deps when requirements.txt changes.
+    # A failed install leaves the hash unchanged so the next launch retries.
     req_hash = _requirements_hash()
     installed_hash = DEPS_FLAG.read_text(encoding="utf-8").strip() if DEPS_FLAG.is_file() else ""
     if installed_hash != req_hash:
-        failed_hash = DEPS_FAILURE_FLAG.read_text(encoding="utf-8").strip() if DEPS_FAILURE_FLAG.is_file() else ""
-        if failed_hash == req_hash:
-            log("Skipping dependency retry for unchanged requirements; previous install failed.")
-        else:
-            log("Installing / upgrading dependencies...")
-            try:
-                _install_dependencies(venv_python, req_hash)
-            except Exception as exc:
-                log(f"Dependency installation failed: {exc}")
-                DEPS_FAILURE_FLAG.write_text(req_hash, encoding="utf-8")
-                if _runtime_dependencies_available(venv_python):
-                    log("Using the existing runtime and continuing to start the service.")
-                else:
-                    log("Existing runtime is incomplete; service will not start.")
-                    return
+        log("Installing / upgrading dependencies...")
+        try:
+            _install_dependencies(venv_python, req_hash)
+        except Exception as exc:
+            log(f"Dependency installation failed: {exc}")
+            if _runtime_dependencies_available(venv_python):
+                log("Using the existing runtime and continuing to start the service.")
+            else:
+                log("Existing runtime is incomplete; service will not start.")
+                return
 
     # 3. Skip if already running
     try:
@@ -121,13 +114,14 @@ def main() -> None:
     # 4. Launch uvicorn via pythonw.exe (no console window)
     log(f"Starting uvicorn on {port}...")
     os.chdir(str(PROJECT_DIR))
-    subprocess.Popen(
-        [str(venv_pythonw), "-m", "uvicorn", "converter_service:app",
-         "--app-dir", str(PROJECT_DIR / "src"),
-         "--host", "127.0.0.1", "--port", port],
-        stdout=subprocess.DEVNULL,
-        stderr=open(str(PROJECT_DIR / "uvicorn.log"), "a", encoding="utf-8"),
-    )
+    with open(str(PROJECT_DIR / "uvicorn.log"), "a", encoding="utf-8") as log_file:
+        subprocess.Popen(
+            [str(venv_pythonw), "-m", "uvicorn", "converter_service:app",
+             "--app-dir", str(PROJECT_DIR / "src"),
+             "--host", "127.0.0.1", "--port", port],
+            stdout=subprocess.DEVNULL,
+            stderr=log_file,
+        )
     log("uvicorn launched.")
 
 

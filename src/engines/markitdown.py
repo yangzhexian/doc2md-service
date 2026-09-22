@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 from loguru import logger
@@ -11,9 +12,24 @@ from .base import (
     BaseConverterEngine,
     ConvertOptions,
     ConvertResult,
+    OutputWriteError,
     _resolve_output_dir,
+    write_text_output,
 )
 from .registry import register_engine
+
+# MarkItDown.__init__ builds a requests.Session and a magika.Magika() instance;
+# reuse one converter across requests instead of paying that cost every time.
+_MARKITDOWN: MarkItDown | None = None
+_MARKITDOWN_LOCK = threading.Lock()
+
+
+def _get_markitdown() -> MarkItDown:
+    global _MARKITDOWN
+    with _MARKITDOWN_LOCK:
+        if _MARKITDOWN is None:
+            _MARKITDOWN = MarkItDown()
+        return _MARKITDOWN
 
 
 @register_engine
@@ -27,14 +43,24 @@ class MarkItDownEngine(BaseConverterEngine):
             ".docx",
             ".pptx",
             ".xlsx",
+            ".doc",
+            ".ppt",
+            ".xls",
             ".html",
             ".htm",
             ".csv",
+            ".tsv",
             ".txt",
             ".json",
             ".xml",
             ".epub",
             ".rtf",
+            ".odt",
+            ".ods",
+            ".odp",
+            ".ofd",
+            ".ipynb",
+            ".msg",
             ".png",
             ".jpg",
             ".jpeg",
@@ -45,13 +71,10 @@ class MarkItDownEngine(BaseConverterEngine):
         }
     )
 
-    def __init__(self) -> None:
-        self._converter = MarkItDown()
-
     def convert(self, file_path: Path, options: ConvertOptions) -> ConvertResult:
         logger.info(f"MarkItDown: converting '{file_path}'")
         try:
-            md_result = self._converter.convert(str(file_path))
+            md_result = _get_markitdown().convert(str(file_path))
         except Exception as exc:
             logger.exception("MarkItDown conversion failed")
             return ConvertResult(
@@ -61,24 +84,20 @@ class MarkItDownEngine(BaseConverterEngine):
                 error=f"MarkItDown failed: {exc}",
             )
 
+        # 0.1.8 canonical attribute (``text_content`` is a soft-deprecated alias).
+        text = md_result.markdown
+
         output_dir = _resolve_output_dir(file_path, options.output_dir)
         out_dir = output_dir / file_path.stem
-        out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / f"{file_path.stem}.md"
-        out_path.write_text(md_result.text_content, encoding="utf-8")
+        # Re-raise so the service can map write failures to HTTP 409.
+        write_text_output(out_path, text)
         out_path_resolved = str(out_path.resolve())
 
         return ConvertResult(
-            markdown=md_result.text_content,
+            markdown="",
             engine=self.name,
             output_path=out_path_resolved,
             output_dir=str(output_dir.resolve()),
             images_dir=None,
         )
-
-    def health_check(self) -> bool:
-        try:
-            MarkItDown()
-            return True
-        except Exception:
-            return False

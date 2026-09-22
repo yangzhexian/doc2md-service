@@ -30,15 +30,12 @@ def list_engines() -> list[str]:
     return list(_REGISTRY.keys())
 
 
-def engine_for_extension(file_path: str) -> Type["BaseConverterEngine"] | None:
-    """Return the first registered engine that supports the file extension."""
-    from pathlib import Path
-
-    suffix = Path(file_path).suffix.lower()
+def all_supported_extensions() -> frozenset[str]:
+    """Union of every registered engine's supported extensions."""
+    result: set[str] = set()
     for cls in _REGISTRY.values():
-        if suffix in cls.supported_extensions:
-            return cls
-    return None
+        result |= cls.supported_extensions
+    return frozenset(result)
 
 
 # Import built-in engines so they register themselves.

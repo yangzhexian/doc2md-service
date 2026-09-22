@@ -5,8 +5,9 @@ description: Convert documents (PDF, DOCX, PPTX, XLSX, HTML, CSV, images) to Mar
 
 # docs2md
 
-Local document-to-Markdown service. PDFs use MinerU by default; other formats
-use MarkItDown. The engine can be overridden per request.
+Local document-to-Markdown service. PDFs and Office/native formats use MinerU
+4.x by default; other formats use MarkItDown. The engine can be overridden per
+request.
 
 The HTTP API **does not return the converted Markdown content**; it only returns
 conversion status, the engine used, and the path where the `.md` file was saved.
@@ -82,20 +83,17 @@ curl -X POST http://127.0.0.1:8000/convert/folder \
 | Field | Default | Description |
 |---|---|---|
 | `output_dir` | see endpoint notes | Base directory for output |
-| `engine` | `mineru` | `mineru`, `markitdown`, or `auto` |
-| `method` | `auto` | MinerU parse method: `auto`, `ocr`, `txt` |
-| `lang` | `""` | MinerU OCR language hint: `ch`, `en` (alias of ch), `korean`, `arabic`, `east_slavic`, `cyrillic`, `devanagari`, `ta`, `te`, `ka`, `th`, `el`, `ch_server` |
-| `formula_enable` | `true` | Enable MinerU formula recognition |
-| `table_enable` | `true` | Enable MinerU table recognition |
-| `backend` | `auto` | MinerU backend: `auto`, `pipeline`, `vlm-engine`, `hybrid-engine`, `vlm-http-client`, `hybrid-http-client`. `auto` picks `hybrid-engine` (best quality for papers) when both model sets are installed, otherwise `pipeline` |
-| `effort` | `medium` | Hybrid backend effort: `medium`, `high` (higher accuracy, slower) |
-| `server_url` | — | Remote MinerU server URL, required for `*-http-client` backends |
-| `start_page` | `0` | First page to parse (0-based) |
-| `end_page` | — | Last page to parse (0-based, inclusive) |
+| `engine` | by extension | `mineru` or `markitdown` (omit to auto-route) |
+| `tier` | `standard` | MinerU quality tier: `flash` (fast / native docs), `basic` (OCR/formula/table), `standard` (complex layout, best default), `advanced` (hard docs, higher cost) |
+| `remote` | `false` | Use remote MinerU inference (`--remote`) |
+| `pages` | `all` | Page spec, 1-based: `all`, `1-5`, `1-5,8`, `r3-r1` (rN = Nth from end) |
 
-For academic papers with formulas and dense tables, prefer
-`backend=hybrid-engine` with `effort=high` when the VLM model is installed
-(check `/health` → `vlm_models_ready`).
+PDF and images support every tier. Office / HTML / CSV / EPUB / RTF /
+OpenDocument / OFD always parse as whole-document `flash`.
+
+For academic papers with formulas and dense tables, keep the default
+`tier=standard` (or use `tier=advanced` when `standard` is not enough).
+Check `/health` → `models_ready` before requesting a tier that needs models.
 
 ## Response
 
@@ -109,11 +107,13 @@ For academic papers with formulas and dense tables, prefer
   "output_dir": "</absolute/path/to/output>",
   "images_dir": "</absolute/path/to/output/stem/images>",
   "fallback": false,
+  "fallback_from": null,
   "message": "Saved to </absolute/path/to/output/stem/stem.md>"
 }
 ```
 
-`engine` is `mineru` or `markitdown` (or `markitdown (fallback from mineru)`).
+`engine` is `mineru` or `markitdown`. On MinerU failure the service falls back
+automatically: `fallback: true`, `fallback_from: "mineru"`.
 Report the engine and output path. On error: `{"detail": "..."}`.
 
 Do **not** expect a `markdown` field in the response. Read the saved file from
@@ -131,7 +131,9 @@ Do **not** expect a `markdown` field in the response. Read the saved file from
       "status": "ok",
       "engine": "mineru",
       "output_path": "</absolute/path/to/output/paper/paper.md>",
-      "images_dir": "</absolute/path/to/output/paper/images>"
+      "images_dir": "</absolute/path/to/output/paper/images>",
+      "fallback": false,
+      "fallback_from": null
     }
   ]
 }

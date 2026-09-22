@@ -35,6 +35,7 @@ source "$VENV_DIR/bin/activate"
 # ========== 3. Install / upgrade dependencies ==========
 # The flag stores a hash of requirements.txt so that pulling a newer version
 # of this repo (or bumping dependency versions) automatically reinstalls.
+# A failed install leaves the hash unchanged so the next start retries.
 REQ_HASH="$("$VENV_DIR/bin/python" -c \
     "import hashlib, pathlib; print(hashlib.sha256(pathlib.Path('$SCRIPT_DIR/requirements.txt').read_bytes()).hexdigest())")"
 INSTALLED_HASH=""
@@ -60,9 +61,9 @@ if [ ! -d "$SCRIPT_DIR/mineru_models" ]; then
     echo ""
 elif [ ! -d "$SCRIPT_DIR/mineru_models/vlm" ]; then
     echo ""
-    echo "NOTE: VLM model not found. The high-accuracy hybrid-engine backend"
-    echo "      is unavailable; falling back to the pipeline backend."
-    echo "      Download it with: ./update.sh auto all"
+    echo "NOTE: VLM model not found. The standard/advanced quality tiers"
+    echo "      are unavailable; use tier=flash or tier=basic instead."
+    echo "      Download it with: ./update.sh --tier standard"
     echo ""
 fi
 

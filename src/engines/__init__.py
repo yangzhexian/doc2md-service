@@ -1,25 +1,32 @@
 """Converter engine package."""
 
 from .base import (
+    MINERU_TIERS,
     BaseConverterEngine,
     ConvertOptions,
     ConvertResult,
     ConvertStatusResponse,
-    normalize_mineru_backend,
-    normalize_mineru_effort,
-    normalize_mineru_lang,
+    OutputWriteError,
+    normalize_mineru_pages,
+    normalize_mineru_tier,
 )
-from .registry import engine_for_extension, get_engine, list_engines, register_engine
+from .registry import (
+    all_supported_extensions,
+    get_engine,
+    list_engines,
+    register_engine,
+)
 
 __all__ = [
+    "MINERU_TIERS",
     "BaseConverterEngine",
     "ConvertOptions",
     "ConvertResult",
     "ConvertStatusResponse",
-    "normalize_mineru_backend",
-    "normalize_mineru_effort",
-    "normalize_mineru_lang",
-    "engine_for_extension",
+    "OutputWriteError",
+    "normalize_mineru_pages",
+    "normalize_mineru_tier",
+    "all_supported_extensions",
     "get_engine",
     "list_engines",
     "register_engine",

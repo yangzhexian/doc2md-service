@@ -1,13 +1,13 @@
 @echo off
-REM Download or update local MinerU models.
+REM Download or update local MinerU 4.x models.
 REM Usage:
-REM   update.bat                     pipeline models, auto-select source
-REM   update.bat huggingface         force HuggingFace
-REM   update.bat modelscope          force ModelScope
-REM   update.bat auto all            pipeline + VLM models (hybrid backend)
-REM   update.bat auto vlm            VLM model only
+REM   update.bat                          standard tier (small + VLM), auto source
+REM   update.bat huggingface              force HuggingFace
+REM   update.bat modelscope               force ModelScope
+REM   update.bat auto --tier basic        small models only
+REM   update.bat auto --tier standard     small + VLM (default)
 REM
-REM model-type: pipeline (default) | vlm | all
+REM tier: basic | standard | advanced  (default: standard)
 
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
@@ -22,8 +22,16 @@ if exist "venv\Scripts\python.exe" (
 
 set SOURCE=%~1
 if "%SOURCE%"=="" set SOURCE=auto
-set MODEL_TYPE=%~2
-if "%MODEL_TYPE%"=="" set MODEL_TYPE=pipeline
 
-"%PYTHON%" "%~dp0scripts\update.py" %SOURCE% --model-type %MODEL_TYPE%
+REM Forward the remaining arguments (notably --tier).
+set ARGS=
+shift
+:collect
+if "%~1"=="" goto run
+set ARGS=!ARGS! %1
+shift
+goto collect
+
+:run
+"%PYTHON%" "%~dp0scripts\update.py" %SOURCE% %ARGS%
 endlocal

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Download or update local MinerU models.
+# Download or update local MinerU 4.x models.
 # Usage:
-#   ./update.sh                     pipeline models, auto-select source
-#   ./update.sh huggingface         force HuggingFace
-#   ./update.sh modelscope          force ModelScope
-#   ./update.sh auto all            pipeline + VLM models (hybrid backend)
-#   ./update.sh auto vlm            VLM model only
+#   ./update.sh                          standard tier (small + VLM), auto source
+#   ./update.sh huggingface              force HuggingFace
+#   ./update.sh modelscope               force ModelScope
+#   ./update.sh auto --tier basic        small models only
+#   ./update.sh auto --tier standard     small + VLM (default)
 #
-# model-type: pipeline (default) | vlm | all
+# tier: basic | standard | advanced  (default: standard)
 
 set -euo pipefail
 
@@ -32,5 +32,6 @@ else
 fi
 
 SOURCE="${1:-auto}"
-MODEL_TYPE="${2:-pipeline}"
-"$PYTHON" "$SCRIPT_DIR/scripts/update.py" "$SOURCE" --model-type "$MODEL_TYPE"
+shift || true
+# Remaining args are forwarded (notably --tier).
+"$PYTHON" "$SCRIPT_DIR/scripts/update.py" "$SOURCE" "$@"
