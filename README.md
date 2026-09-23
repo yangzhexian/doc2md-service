@@ -97,6 +97,11 @@ update.bat auto --tier basic         # small models only
 The updater calls `mineru-kit models download --tier <tier>` and
 `mineru-kit models verify --tier <tier>`, then writes `config/mineru.yaml`
 so the service uses the project-local weights.
+On Windows, the generated config selects the llama.cpp backend and the updater
+downloads its GGUF model and projector. MinerU 4.0.5's LMDeploy backend fails
+on some Windows installations when it loads the vision model. To choose a
+different backend, set `DOCS2MD_MINERU_VLM_ENGINE` to `auto`, `lmdeploy`,
+`vllm`, `mlx`, or `llama-cpp` before starting or updating the service.
 
 > **Note:** MinerU 4.x model packages differ from 3.x. Re-run `./update.sh`
 > after upgrading — old `mineru_models/` trees are not recognized.
@@ -169,7 +174,7 @@ model:
   base_dir: <project>/mineru_models
   small_backend: auto
   vlm:
-    engine: auto
+    engine: llama-cpp  # Windows default; auto on other platforms
 ```
 
 and sets `MINERU_CONFIG` to point at it so the MinerU 4.x CLI uses the
@@ -182,10 +187,9 @@ This means the service is **self-configuring** — you just need to ensure
 
 ```
 mineru_models/
-├── small/                       # small models (layout / formula / OCR / table)
-│   └── ...                      # or MinerU-4_models_onnx / MinerU-4_models_torch
-└── vlm/                         # VLM models (standard / advanced tiers)
-    └── ...
+├── MinerU-4_models_torch/        # or MinerU-4_models_onnx/
+├── MinerU2.5-Pro-2605-1.2B/    # LMDeploy / vLLM weights
+└── MinerU2.5-Pro-2605-1.2B-GGUF/ # llama.cpp model and projector
 ```
 
 ## Choosing a Quality Tier

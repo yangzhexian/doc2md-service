@@ -154,9 +154,10 @@ def _find_markdown_file(search_root: Path) -> Path | None:
 
 def _is_zip_file(path: Path) -> bool:
     try:
-        with path.open("rb") as fh:
-            return fh.read(2) == b"PK"
-    except OSError:
+        # A PK header alone is visible before the archive's central directory
+        # has been written, so it must not trigger hung-worker recovery.
+        return zipfile.is_zipfile(path)
+    except (OSError, ValueError):
         return False
 
 
@@ -244,13 +245,8 @@ def _read_log_tail(path: Path, limit: int = 500) -> str:
 
 
 def _locate_primary_output(work_dir: Path, explicit: Path | None = None) -> Path | None:
-    """Find the zip / markdown artifact produced by ``mineru-kit parse``."""
-    zip_path = _locate_zip_output(work_dir, explicit=explicit)
-    if zip_path is not None:
-        return zip_path
-    if explicit is not None and explicit.is_file() and not _is_zip_file(explicit):
-        return explicit
-    return _find_markdown_file(work_dir)
+    """Find a complete zip, excluding MinerU's intermediate Markdown files."""
+    return _locate_zip_output(work_dir, explicit=explicit)
 
 
 def _run_mineru_process(
@@ -263,8 +259,8 @@ def _run_mineru_process(
 ) -> tuple[int, str, bool]:
     """Run MinerU, accepting stable output when its Windows workers never exit.
 
-    ``output_dir`` / ``explicit_output`` are scanned for a zip / markdown
-    artifact whose mtime is used to detect "output ready but process hung".
+    ``output_dir`` / ``explicit_output`` are scanned for a complete zip whose
+    mtime is used to detect "output ready but process hung".
     """
     log_path.parent.mkdir(parents=True, exist_ok=True)
     returncode: int | None = None
@@ -345,7 +341,7 @@ class MinerUEngine(BaseConverterEngine):
     name = "mineru"
     supported_extensions = frozenset(_PDF_AND_IMAGE_EXTS | _NATIVE_FLASH_EXTS)
 
-    def validate_options(self, options: ConvertOptions) -> None:
+    def validate_options(self, options: ConvertOptions, file_path: Path | None = None) -> None:
         """Reject tiers whose models (or remote mode) are unavailable."""
         if _find_mineru_kit_bin() is None:
             raise ValueError(
@@ -353,6 +349,10 @@ class MinerUEngine(BaseConverterEngine):
                 "pip install 'mineru>=4.0,<5'"
             )
         tier = normalize_mineru_tier(options.mineru_tier)
+        if file_path is not None:
+            tier = _effective_tier(file_path, tier)
+        if options.mineru_remote:
+            return
         try:
             ensure_tier_models(tier)
         except RuntimeError as exc:
@@ -368,7 +368,8 @@ class MinerUEngine(BaseConverterEngine):
 
         requested_tier = normalize_mineru_tier(options.mineru_tier)
         tier = _effective_tier(file_path, requested_tier)
-        ensure_tier_models(tier)
+        if not options.mineru_remote:
+            ensure_tier_models(tier)
 
         original_name = file_path.stem
         work_dir = Path(tempfile.mkdtemp(prefix="mineru_"))
@@ -409,6 +410,7 @@ class MinerUEngine(BaseConverterEngine):
         try:
             env = os.environ.copy()
             env.setdefault("MINERU_MODEL_SOURCE", "local")
+            env["PYTHONIOENCODING"] = "utf-8"
 
             returncode, stderr, recovered_from_hang = _run_mineru_process(
                 cmd,

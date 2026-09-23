@@ -9,7 +9,7 @@ from pathlib import Path
 # MinerU >= 4.0 public quality tiers (mineru-kit parse --tier).
 MINERU_TIERS: frozenset[str] = frozenset({"flash", "basic", "standard", "advanced"})
 
-_PAGE_RANGE_RE = re.compile(r"^(?:r?\d+)(?:-(?:r?\d+))?$")
+_PAGE_RANGE_RE = re.compile(r"^(r?[1-9][0-9]*)(?:\s*-\s*(r?[1-9][0-9]*))?$")
 
 
 class OutputWriteError(RuntimeError):
@@ -55,16 +55,23 @@ def normalize_mineru_pages(pages: str) -> str:
     pages = (pages or "all").strip().lower()
     if pages == "all":
         return "all"
-    parts = [p.strip() for p in pages.split(",") if p.strip()]
-    if not parts:
-        return "all"
+    parts = [p.strip() for p in pages.split(",")]
+    normalized: list[str] = []
     for part in parts:
-        if not _PAGE_RANGE_RE.match(part):
+        match = _PAGE_RANGE_RE.fullmatch(part)
+        if match is None:
             raise ValueError(
                 f"Invalid MinerU pages spec '{pages}'. Use 'all' or comma-separated "
                 "ranges like '1-5,8,r3-r1' (1-based; rN = Nth from the end)."
             )
-    return ",".join(parts)
+        start, end = match.group(1), match.group(2)
+        if end is not None:
+            start_index = -int(start[1:]) if start.startswith("r") else int(start)
+            end_index = -int(end[1:]) if end.startswith("r") else int(end)
+            if (start_index > 0) == (end_index > 0) and start_index > end_index:
+                raise ValueError(f"Invalid MinerU pages spec '{pages}': reversed range")
+        normalized.append(start if end is None else f"{start}-{end}")
+    return ",".join(normalized)
 
 
 @dataclass
@@ -145,7 +152,7 @@ class BaseConverterEngine:
     name: str = ""
     supported_extensions: frozenset[str] = frozenset()
 
-    def validate_options(self, options: ConvertOptions) -> None:
+    def validate_options(self, options: ConvertOptions, file_path: Path | None = None) -> None:
         """Validate request options before conversion.
 
         Engines should raise ValueError with an actionable message for

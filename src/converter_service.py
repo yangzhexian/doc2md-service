@@ -199,7 +199,7 @@ def _run_conversion(
     # Configuration problems (missing models, missing binary, ...) are
     # client errors: report them without trying a fallback engine.
     try:
-        engine.validate_options(opts)
+        engine.validate_options(opts, file_path)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -223,13 +223,21 @@ def _run_conversion(
 
     # Fallback to MarkItDown when MinerU fails.
     if result.error and chosen == "mineru" and get_engine("markitdown") is not None:
-        logger.warning(f"MinerU failed: {result.error}. Falling back to markitdown.")
+        mineru_error = result.error
+        logger.warning(f"MinerU failed: {mineru_error}. Falling back to markitdown.")
         fallback = get_engine("markitdown")()
         try:
             result = fallback.convert(file_path, opts)
         except OutputWriteError as exc:
             logger.exception("Fallback output could not be written")
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception as exc:
+            logger.exception("MarkItDown fallback raised an exception")
+            raise HTTPException(
+                status_code=500, detail=f"{mineru_error}; markitdown error: {exc}"
+            ) from exc
+        if result.error:
+            result.error = f"{mineru_error}; {result.error}"
         result.engine = "markitdown"
         result.fallback = True
         result.fallback_from = "mineru"

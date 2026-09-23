@@ -56,10 +56,9 @@ def _runtime_dependencies_available(venv_python: Path) -> bool:
 
 def _install_dependencies(venv_python: Path, req_hash: str) -> None:
     """Install dependencies and log package-manager failures in full enough detail."""
-    pip = VENV_DIR / "Scripts" / "pip.exe"
     commands = [
-        [str(pip), "install", "--upgrade", "pip", "--quiet"],
-        [str(pip), "install", "-r", str(PROJECT_DIR / "requirements.txt")],
+        [str(venv_python), "-m", "pip", "install", "--upgrade", "pip", "--quiet"],
+        [str(venv_python), "-m", "pip", "install", "-r", str(PROJECT_DIR / "requirements.txt")],
     ]
     for command in commands:
         result = subprocess.run(command, capture_output=True, text=True)

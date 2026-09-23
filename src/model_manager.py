@@ -21,6 +21,7 @@ Tier requirements:
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 from loguru import logger
@@ -49,7 +50,9 @@ def get_model_root() -> Path:
 
 
 def get_vlm_root() -> Path:
-    """Return the first present VLM package dir (or the canonical path)."""
+    """Return the VLM package dir for the selected local backend."""
+    if get_vlm_engine() == "llama-cpp":
+        return _VLM_PACKAGE_DIRS[1]
     for candidate in _VLM_PACKAGE_DIRS:
         if candidate.is_dir():
             return candidate
@@ -66,14 +69,24 @@ def _package_present(path: Path) -> bool:
     if not path.is_dir():
         return False
     for p in path.rglob("*"):
-        if p.is_file() and p.suffix.lower() in _WEIGHT_SUFFIXES:
+        if p.is_file() and p.stat().st_size > 0 and p.suffix.lower() in _WEIGHT_SUFFIXES:
             return True
-    # Accept a non-empty package dir even when weights use an unexpected suffix.
-    try:
-        next(path.iterdir())
-        return True
-    except StopIteration:
-        return False
+    return False
+
+
+def get_vlm_engine() -> str:
+    """Choose a local VLM backend that works with the bundled model package.
+
+    MinerU 4.0.5's LMDeploy path can fail while dispatching the vision model on
+    Windows. Its llama.cpp backend uses the GGUF package and works there.
+    Other platforms keep MinerU's own automatic backend selection.
+    """
+    engine = os.environ.get("DOCS2MD_MINERU_VLM_ENGINE", "").strip().lower()
+    if not engine:
+        return "llama-cpp" if sys.platform == "win32" else "auto"
+    if engine not in {"auto", "llama-cpp", "lmdeploy", "vllm", "mlx"}:
+        raise ValueError(f"Invalid DOCS2MD_MINERU_VLM_ENGINE: {engine}")
+    return engine
 
 
 def small_models_present() -> bool:
@@ -83,6 +96,15 @@ def small_models_present() -> bool:
 
 def vlm_models_present() -> bool:
     """True when a MinerU VLM model package is installed."""
+    engine = get_vlm_engine()
+    if engine == "llama-cpp":
+        gguf_dir = _VLM_PACKAGE_DIRS[1]
+        return (
+            any(p.stat().st_size > 0 for p in gguf_dir.glob("*.gguf") if not p.name.startswith("mmproj-"))
+            and any(p.stat().st_size > 0 for p in gguf_dir.glob("mmproj-*.gguf"))
+        )
+    if engine in {"lmdeploy", "vllm", "mlx"}:
+        return _package_present(_VLM_PACKAGE_DIRS[0])
     return any(_package_present(p) for p in _VLM_PACKAGE_DIRS)
 
 
@@ -112,7 +134,7 @@ def build_mineru_config_text() -> str:
         f'  base_dir: "{base_dir}"\n'
         "  small_backend: auto\n"
         "  vlm:\n"
-        "    engine: lmdeploy\n"
+        f"    engine: {get_vlm_engine()}\n"
     )
 
 
