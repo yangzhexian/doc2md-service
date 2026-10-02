@@ -1,0 +1,13 @@
+# Direct runtime dependencies. Regenerate the universal hash lock with:
+#   python scripts/lock_dependencies.py
+# Python 3.12 is the tested baseline; the resolver also preserves Python 3.10+.
+fastapi==0.136.3
+uvicorn[standard]==0.48.0
+markitdown[all]==0.1.8
+mineru==4.0.5
+pydantic==2.13.4
+python-multipart==0.0.30
+loguru==0.7.3
+# MarkItDown's Azure converter currently requires this beta. Declaring the exact
+# release allows that dependency without enabling prereleases for every package.
+azure-ai-contentunderstanding==1.2.0b1

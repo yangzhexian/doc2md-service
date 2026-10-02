@@ -1,0 +1,4 @@
+# The test lock includes the runtime and constrains shared packages to its lock.
+-r requirements.in
+-c requirements.txt
+httpx==0.28.1

@@ -12,7 +12,20 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from engines.base import ConvertOptions, OutputWriteError  # noqa: E402
-from engines.mineru import MinerUEngine, _save_markdown  # noqa: E402
+from engines.mineru import MinerUEngine, _find_mineru_kit_bin, _save_markdown  # noqa: E402
+
+
+class MinerUBinaryTests(unittest.TestCase):
+    def test_cli_from_current_interpreter_precedes_project_venv(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            scripts = Path(directory) / "environment"
+            scripts.mkdir()
+            import os
+            binary = scripts / ("mineru-kit.exe" if os.name == "nt" else "mineru-kit")
+            binary.write_bytes(b"current environment entrypoint")
+            with patch("engines.mineru.sys.executable", str(Path(directory) / "python")), \
+                    patch("engines.mineru.sysconfig.get_path", return_value=str(scripts)):
+                self.assertEqual(_find_mineru_kit_bin(), str(binary))
 
 
 class MinerUOutputTests(unittest.TestCase):

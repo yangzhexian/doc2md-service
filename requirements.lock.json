@@ -1,0 +1,12 @@
+{
+  "uv": "0.9.30",
+  "python": ">=3.10,<3.15",
+  "tested_python": "3.12",
+  "index": "https://pypi.org/simple",
+  "files": {
+    "requirements.in": "5b3f7c8f79631141440112d08175f2bc8f51603cbdfd27676fadf03b14e8cf4f",
+    "requirements.txt": "109168000867052fca85b68ea13a85fa7fd3b257abd5962208b477e01b4db2bc",
+    "requirements-test.in": "8ff712db1884bace6b5c195a076689482c0d9d49af342283cf8724bbb7729ebf",
+    "requirements-test.txt": "bd6fde903d5469e7a75b7a489b55513b3f2e42b587f1d26f136852dd5033b888"
+  }
+}

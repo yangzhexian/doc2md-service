@@ -4,7 +4,7 @@
 # =========================================
 # This script:
 #   1. Creates a Python virtual environment (if missing)
-#   2. Installs / upgrades dependencies when requirements.txt changes
+#   2. Installs pinned dependencies when locks or their inputs change
 #   3. Starts the FastAPI service at http://127.0.0.1:8000
 #
 # Usage:
@@ -77,11 +77,10 @@ fi
 source "$VENV_DIR/bin/activate"
 
 # ========== 3. Install / upgrade dependencies ==========
-# The flag stores a hash of requirements.txt so that pulling a newer version
-# of this repo (or bumping dependency versions) automatically reinstalls.
+# The flag hashes requirements.txt, its .in source, and nested local inputs so
+# pulling a newer lock or changing a dependency input automatically reinstalls.
 # A failed install leaves the hash unchanged so the next start retries.
-REQ_HASH="$("$VENV_DIR/bin/python" -c \
-    'import hashlib, pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' \
+REQ_HASH="$("$VENV_DIR/bin/python" "$SCRIPT_DIR/scripts/requirements_hash.py" \
     "$SCRIPT_DIR/requirements.txt")"
 INSTALLED_HASH=""
 if [ -f "$DEPS_FLAG" ]; then
@@ -90,7 +89,7 @@ fi
 if [ "$INSTALLED_HASH" != "$REQ_HASH" ]; then
     echo "==> Installing / upgrading dependencies (this may take several minutes)..."
     "$VENV_DIR/bin/python" -m pip install --upgrade pip --quiet
-    "$VENV_DIR/bin/python" -m pip install -r "$SCRIPT_DIR/requirements.txt"
+    "$VENV_DIR/bin/python" -m pip install --require-hashes -r "$SCRIPT_DIR/requirements.txt"
     echo "    Done."
 fi
 

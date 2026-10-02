@@ -23,11 +23,14 @@ def log(msg: str) -> None:
 
 
 def _requirements_hash() -> str:
-    import hashlib
+    # Keep Windows and Unix installation markers identical.
+    from importlib.util import module_from_spec, spec_from_file_location
 
-    return hashlib.sha256(
-        (PROJECT_DIR / "requirements.txt").read_bytes()
-    ).hexdigest()
+    spec = spec_from_file_location("docs2md_requirements_hash", PROJECT_DIR / "scripts/requirements_hash.py")
+    assert spec is not None and spec.loader is not None
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.requirements_hash(PROJECT_DIR / "requirements.txt")
 
 
 def _tail(value: str, limit: int = 4000) -> str:
@@ -58,7 +61,7 @@ def _install_dependencies(venv_python: Path, req_hash: str) -> None:
     """Install dependencies and log package-manager failures in full enough detail."""
     commands = [
         [str(venv_python), "-m", "pip", "install", "--upgrade", "pip", "--quiet"],
-        [str(venv_python), "-m", "pip", "install", "-r", str(PROJECT_DIR / "requirements.txt")],
+        [str(venv_python), "-m", "pip", "install", "--require-hashes", "-r", str(PROJECT_DIR / "requirements.txt")],
     ]
     for command in commands:
         result = subprocess.run(command, capture_output=True, text=True)
@@ -86,7 +89,7 @@ def main() -> None:
         )
         log("Venv created.")
 
-    # 2. Install / upgrade deps when requirements.txt changes.
+    # 2. Install pinned deps when locks or their editable inputs change.
     # A failed install leaves the hash unchanged so the next launch retries.
     req_hash = _requirements_hash()
     installed_hash = DEPS_FLAG.read_text(encoding="utf-8").strip() if DEPS_FLAG.is_file() else ""

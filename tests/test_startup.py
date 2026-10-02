@@ -59,7 +59,7 @@ class StartupScriptTests(unittest.TestCase):
         self.write_script(self.project / "start.sh", (PROJECT_ROOT / "start.sh").read_text())
         self.write_script(self.project / "stub_python", """#!/usr/bin/env bash
 set -euo pipefail
-if [ "$1" = -c ]; then
+if [[ "$1" == */scripts/requirements_hash.py ]]; then
     printf fixturehash
 elif [ "$1" = -m ] && [ "$2" = pip ]; then
     printf 'pip:%s\n' "$*" >> "$DOCS2MD_TEST_TRACE"
@@ -169,6 +169,7 @@ fi
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.venv / ".deps_installed").read_text(), "fixturehash")
         self.assertEqual(sum(line.startswith("pip:") for line in self.trace_lines()), 2)
+        self.assertTrue(any("install --require-hashes -r" in line for line in self.trace_lines()))
         self.assertIn("python-uvicorn-check", self.trace_lines())
         self.assertNotIn("server-start", self.trace_lines())
 

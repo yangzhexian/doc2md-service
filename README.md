@@ -5,7 +5,7 @@ images, and other formats to Markdown. Powered by
 **[MinerU](https://github.com/opendatalab/MinerU)** (primary) and
 **[MarkItDown](https://github.com/microsoft/markitdown)** (fallback).
 
-Tracked upstream versions: **MinerU >= 4.0, < 5** and **markitdown >= 0.1.8**.
+Locked upstream versions: **MinerU 4.0.5** and **MarkItDown 0.1.8**.
 
 > **Breaking (4.0.0):** MinerU 3.x request fields (`backend`, `effort`,
 > `method`, `lang`, `formula_enable`, `table_enable`, `server_url`,
@@ -43,7 +43,8 @@ Tracked upstream versions: **MinerU >= 4.0, < 5** and **markitdown >= 0.1.8**.
 - **Three API modes** — Convert by local file path, file upload, or folder path.
 - **One-click start** — `start.sh` (Linux/macOS) and `start.bat` (Windows)
   handle venv creation, dependency install, and service launch. Dependencies
-  are reinstalled automatically whenever `requirements.txt` changes.
+  are installed with package hashes and refreshed when a dependency lock or
+  its editable input changes.
 - **Swagger UI** — Interactive API docs at `/docs`.
 - **Health check** — `GET /health` reports service status, per-tier model
   readiness, and GPU status.
@@ -54,16 +55,20 @@ Tracked upstream versions: **MinerU >= 4.0, < 5** and **markitdown >= 0.1.8**.
 
 | Requirement | Minimum |
 |---|---|
-| Operating System | Linux / Windows / macOS 14+ |
-| Python | 3.10 – 3.14 (MinerU 4.x requires `>=3.10,<3.15`) |
+| Operating System | Windows / Linux (Ubuntu 22.04+ or glibc 2.34+); macOS 14+ is not covered by CI |
+| Python | 3.12 (tested on Windows and Linux) |
 | RAM | 16 GB (32 GB recommended) |
 | Disk (free space) | 20 GB (SSD recommended) |
 | GPU VRAM (optional) | 4 GB for GPU acceleration |
-| MinerU | `>= 4.0, < 5` (installed automatically) |
-| MarkItDown | `>= 0.1.8, < 0.2` (installed automatically) |
+| MinerU | `4.0.5` (installed automatically) |
+| MarkItDown | `0.1.8` (installed automatically) |
 
 GPU users who want Torch acceleration can install the full extra themselves:
 `pip install 'mineru[full]'` (the base `mineru` package is CPU/ONNX friendly).
+GPU extras are outside the tested CPU lock profile. The portable lock includes
+upstream platform markers, including macOS ARM dependencies. MinerU advertises
+Python `>=3.10,<3.15`, but native wheel availability limits installation on
+some Python/platform combinations; use Python 3.12 for the tested setup.
 
 ## Quick Start
 
@@ -489,20 +494,82 @@ curl -X POST http://127.0.0.1:8000/convert/upload \
 
 ## Tests
 
-Run the regression suite in the project's environment:
+CI runs on **Ubuntu 24.04 and Windows Server 2022, Python 3.12** for every
+push and pull request. It verifies lock consistency, installs with package
+hashes, runs `pip check`, checks Bash syntax, and executes the full suite.
+Per-platform real-document JSON reports are retained as workflow artifacts
+for 14 days. OCR is disabled in this CPU CI job.
+
+Install the complete runtime + test lock, then run the regression suite:
 
 ```bash
+./venv/bin/python -m pip install --require-hashes -r requirements-test.txt
 ./venv/bin/python -m unittest discover -s tests -v
 ```
 
 ```cmd
+venv\Scripts\python.exe -m pip install --require-hashes -r requirements-test.txt
 venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
 The suite covers API errors and fallback, output collisions and rollback,
-model completeness and backend selection, and isolated startup-script
-fixtures. Shell tests require Bash (Git Bash works on Windows); they use
-mock package managers and systemd commands.
+model completeness and backend selection, dependency refresh, and isolated
+startup scripts. Shell tests require Bash (Git Bash works on Windows); only
+the startup tests mock package managers and systemd commands.
+
+The checked-in [real-document corpus](tests/fixtures/real_documents/README.md)
+contains self-authored PDF, DOCX, PPTX, XLSX, CSV, HTML, and scanned PNG files.
+The mandatory regressions run 14 actual conversions through MinerU `flash`
+and MarkItDown, checking content, tables, PDF page selections, links, exported
+images, and unchanged input hashes. They isolate configuration and use no
+downloaded models or live service. One PNG OCR regression is opt-in with
+preinstalled local models:
+
+```bash
+DOCS2MD_RUN_OCR=1 DOCS2MD_OCR_MODEL_DIR=/absolute/path/to/models \
+  ./venv/bin/python -m unittest discover -s tests -p test_real_documents.py -v
+```
+
+Set `DOCS2MD_REAL_REGRESSION_REPORT` to a JSON file path to retain the local
+case results. See the corpus README for Windows environment settings,
+Torch backend selection, and deterministic fixture regeneration.
+
+## Dependency Locks
+
+`requirements.in` pins direct runtime dependencies; `requirements.txt` locks
+their complete dependency graph with platform markers and SHA256 hashes.
+`requirements-test.in` adds test dependencies and constrains them to the runtime
+lock; `requirements-test.txt` is a standalone, complete test installation.
+Both launchers use the runtime lock with `--require-hashes`. GPU extras and
+model weights are managed separately from this CPU dependency profile.
+
+Edit the `.in` files, then regenerate both locks in an isolated tooling
+environment with the pinned resolver:
+
+```bash
+python -m venv tmp/lock-tools
+# Linux/macOS (Windows: tmp\lock-tools\Scripts\python.exe)
+tmp/lock-tools/bin/python -m pip install uv==0.9.30
+tmp/lock-tools/bin/python scripts/lock_dependencies.py
+python scripts/lock_dependencies.py --check
+```
+
+Regeneration retains compatible versions from existing locks. To deliberately
+upgrade a transitive package, use the tooling environment to update the runtime
+lock first:
+
+```bash
+tmp/lock-tools/bin/python -m uv pip compile requirements.in \
+  --universal --python-version 3.10 --generate-hashes \
+  --default-index https://pypi.org/simple --no-config \
+  --upgrade-package PACKAGE --output-file requirements.txt
+tmp/lock-tools/bin/python scripts/lock_dependencies.py
+```
+
+The regeneration script synchronizes the test lock and manifest. Commit both
+inputs, both locks, and `requirements.lock.json` together, and validate the
+clean installation and real-document suite. `--check` works offline and
+detects input/output changes without treating Windows CRLF as a version change.
 
 ## Project Structure
 
@@ -523,11 +590,14 @@ doc2md-service/
 │       ├── registry.py
 │       ├── mineru.py
 │       └── markitdown.py
-├── scripts/               # Autostart helpers
+├── .github/workflows/ci.yml # Windows/Linux regression CI
+├── scripts/               # Setup, locking, and autostart helpers
 │   ├── docs2md.service        # systemd user service template
 │   ├── install-autostart.sh   # Install autostart (Linux / systemd)
 │   ├── install-autostart.bat  # Install autostart (Windows)
 │   ├── update.py              # Model update logic
+│   ├── lock_dependencies.py   # Regenerate/check portable locks
+│   ├── requirements_hash.py   # Shared dependency installation marker
 │   └── update_models.py       # Backwards-compatible wrapper
 ├── config/                # Runtime configuration files
 │   └── mineru.yaml            # MinerU 4.x config (auto-generated)
@@ -535,7 +605,12 @@ doc2md-service/
 │   ├── MinerU-4_models_torch/ # Small models (Torch)
 │   ├── MinerU-4_models_onnx/  # Small models (ONNX)
 │   └── MinerU2.5-Pro-2605-1.2B-GGUF/ # VLM (llama.cpp)
-├── requirements.txt       # Python dependencies
+├── requirements.in        # Direct runtime dependency pins
+├── requirements.txt       # Runtime dependency graph + hashes
+├── requirements-test.in   # Test inputs + runtime constraints
+├── requirements-test.txt  # Full runtime/test dependency lock
+├── requirements.lock.json # Lock provenance and consistency hashes
+├── tests/                 # Unit and real document regressions
 ├── README.md              # This file
 ├── .gitignore             # Git ignore rules
 ├── LICENSE                # MIT License
@@ -586,7 +661,7 @@ service:
 
 To follow upstream MinerU / MarkItDown releases, pull the latest version of
 this repo and restart the service — the start scripts detect the changed
-`requirements.txt` and reinstall dependencies automatically:
+dependency locks and reinstall the pinned dependencies automatically:
 
 ```bash
 git pull
@@ -594,11 +669,8 @@ git pull
 ./update.sh --tier standard     # refresh model weights when MinerU changed its models
 ```
 
-You can also upgrade dependencies manually inside the venv:
-
-```bash
-venv/bin/pip install -U "mineru>=4.0,<5" "markitdown[all]>=0.1.8,<0.2"
-```
+To change dependency versions, follow [Dependency Locks](#dependency-locks)
+and run the regression suite before committing the new locks.
 
 ## Troubleshooting
 
@@ -610,10 +682,10 @@ VLM) weights. `GET /health` reports per-tier readiness.
 
 ### "mineru-kit not found"
 
-Install the MinerU 4.x CLI into the project venv:
+Restore the locked dependencies into the project venv:
 
 ```bash
-venv/bin/pip install "mineru>=4.0,<5"
+venv/bin/python -m pip install --require-hashes -r requirements.txt
 ```
 
 ### "CUDA out of memory" or GPU errors

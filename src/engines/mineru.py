@@ -12,6 +12,7 @@ import os
 import shutil
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import threading
 import time
@@ -83,15 +84,19 @@ def _sanitize_filename(name: str) -> str:
 
 
 def _find_mineru_kit_bin() -> str | None:
-    """Prefer the project venv's mineru-kit binary to avoid ABI mismatches."""
+    """Use the CLI from the running interpreter before any legacy fallback."""
     kit_name = "mineru-kit.exe" if os.name == "nt" else "mineru-kit"
     project_root = Path(__file__).resolve().parent.parent.parent
 
-    candidate = project_root / "venv" / ("Scripts" if os.name == "nt" else "bin") / kit_name
-    if candidate.is_file():
-        return str(candidate)
+    # Windows system installs place console scripts in Scripts/, beside the
+    # interpreter directory rather than beside python.exe. Virtual environments
+    # and Unix installs also expose their correct script path through sysconfig.
+    for directory in (Path(sysconfig.get_path("scripts")), Path(sys.executable).parent):
+        candidate = directory / kit_name
+        if candidate.is_file():
+            return str(candidate)
 
-    candidate = Path(sys.executable).parent / kit_name
+    candidate = project_root / "venv" / ("Scripts" if os.name == "nt" else "bin") / kit_name
     if candidate.is_file():
         return str(candidate)
 
