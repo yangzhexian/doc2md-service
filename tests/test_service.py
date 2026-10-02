@@ -23,7 +23,9 @@ class ServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="docs2md_test_")
         self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name)
+        # Windows runners may expose TEMP through an 8.3 alias; the API returns
+        # resolved paths, so build fixtures and expectations from the same path.
+        self.root = Path(temporary.name).resolve()
         self.client = TestClient(service.app)
         log_patch = patch("converter_service.logger")
         log_patch.start()

@@ -63,7 +63,8 @@ class ModelReadinessTests(unittest.TestCase):
     def setUp(self) -> None:
         temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(temp_dir.cleanup)
-        self.root = Path(temp_dir.name)
+        # Model locations resolve Windows 8.3 aliases before returning paths.
+        self.root = Path(temp_dir.name).resolve()
         self.env = patch.dict(os.environ, {
             "MINERU_MODEL_BASE_DIR": str(self.root),
             "MINERU_MODEL_SMALL_BACKEND": "auto",

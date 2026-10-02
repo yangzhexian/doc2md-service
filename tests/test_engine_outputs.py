@@ -32,7 +32,10 @@ class MinerUOutputTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        # Windows TEMP may contain an 8.3 alias (RUNNER~1); production resolves
+        # paths before publishing, so assertions and injected failures must use
+        # that same canonical directory.
+        self.root = Path(self.temp.name).resolve()
         self.engine = MinerUEngine()
         find_binary = patch(
             "engines.mineru._find_mineru_kit_bin", return_value="mineru-kit"
