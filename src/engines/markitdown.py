@@ -12,8 +12,8 @@ from .base import (
     BaseConverterEngine,
     ConvertOptions,
     ConvertResult,
-    OutputWriteError,
-    _resolve_output_dir,
+    normalize_mineru_pages,
+    resolve_output_path,
     write_text_output,
 )
 from .registry import register_engine
@@ -71,7 +71,15 @@ class MarkItDownEngine(BaseConverterEngine):
         }
     )
 
+    def validate_options(self, options: ConvertOptions, file_path: Path | None = None) -> None:
+        if normalize_mineru_pages(options.mineru_pages) != "all":
+            raise ValueError(
+                "MarkItDown only converts whole documents. Use engine='mineru' "
+                "with a PDF file to select pages."
+            )
+
     def convert(self, file_path: Path, options: ConvertOptions) -> ConvertResult:
+        self.validate_options(options, file_path)
         logger.info(f"MarkItDown: converting '{file_path}'")
         try:
             md_result = _get_markitdown().convert(str(file_path))
@@ -87,9 +95,7 @@ class MarkItDownEngine(BaseConverterEngine):
         # 0.1.8 canonical attribute (``text_content`` is a soft-deprecated alias).
         text = md_result.markdown
 
-        output_dir = _resolve_output_dir(file_path, options.output_dir)
-        out_dir = output_dir / file_path.stem
-        out_path = out_dir / f"{file_path.stem}.md"
+        output_dir, out_path = resolve_output_path(file_path, options.output_dir)
         # Re-raise so the service can map write failures to HTTP 409.
         write_text_output(out_path, text)
         out_path_resolved = str(out_path.resolve())

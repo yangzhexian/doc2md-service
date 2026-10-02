@@ -32,16 +32,19 @@ class MinerU4Tests(unittest.TestCase):
             self.assertIn("engine: llama-cpp", model_manager.build_mineru_config_text())
 
     def test_llama_cpp_requires_model_and_projector(self) -> None:
+        from mineru.model.registry import MINERU_2_5_PRO_2605_1_2B_GGUF as repo
+
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            gguf_dir = root / "MinerU2.5-Pro-2605-1.2B-GGUF"
+            gguf_dir = root / repo.name
             gguf_dir.mkdir()
-            with patch.object(
-                model_manager, "_VLM_PACKAGE_DIRS", (root / "full", gguf_dir)
-            ), patch.object(model_manager, "get_vlm_engine", return_value="llama-cpp"):
-                (gguf_dir / "mmproj-model.gguf").write_bytes(b"projector")
+            with patch.dict(os.environ, {
+                "MINERU_MODEL_BASE_DIR": str(root), "MINERU_MODEL_VLM_ENGINE": "llama-cpp",
+            }):
+                (gguf_dir / ".mineru_complete").touch()
+                (gguf_dir / repo.paths["mmproj"]).write_bytes(b"projector")
                 self.assertFalse(model_manager.vlm_models_present())
-                (gguf_dir / "model.gguf").write_bytes(b"weights")
+                (gguf_dir / repo.paths["main"]).write_bytes(b"weights")
                 self.assertTrue(model_manager.vlm_models_present())
 
     def test_marker_without_weights_is_not_a_model(self) -> None:

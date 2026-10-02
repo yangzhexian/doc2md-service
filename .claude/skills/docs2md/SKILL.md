@@ -45,7 +45,7 @@ curl -X POST http://127.0.0.1:8000/convert/path \
 
 - `file_path` is required.
 - `output_dir` is optional. If omitted, results are saved under
-  `<parent_of_file_path>/<stem>/<stem>.md`.
+  `<parent_of_file_path>/<filename>.docs2md/<stem>.md`.
 - Path separators: use `/` or escaped `\\` on Windows.
 
 ### Upload file
@@ -59,7 +59,7 @@ curl -X POST http://127.0.0.1:8000/convert/upload \
 ```
 
 - `output_dir` is optional. If omitted, results are saved under the service's
-  configured upload output directory (default: `<project_root>/output/<stem>/`).
+  configured upload output directory (default: `<project_root>/output/<filename>.docs2md/`).
   Set `DOCS2MD_UPLOAD_OUTPUT_DIR` to override the default.
 
 ### Batch folder
@@ -95,6 +95,10 @@ For academic papers with formulas and dense tables, keep the default
 `tier=standard` (or use `tier=advanced` when `standard` is not enough).
 Check `/health` → `models_ready` before requesting a tier that needs models.
 
+Page subsets require PDF inputs and MinerU. If MinerU fails on a subset,
+the API returns an error instead of falling back to a whole-document parse.
+Explicit MarkItDown requests and non-PDF inputs require `pages: "all"`.
+
 ## Response
 
 ### Single-file response
@@ -103,12 +107,12 @@ Check `/health` → `models_ready` before requesting a tier that needs models.
 {
   "success": true,
   "engine": "mineru",
-  "output_path": "</absolute/path/to/output/stem/stem.md>",
+  "output_path": "</absolute/path/to/output/document.pdf.docs2md/document.md>",
   "output_dir": "</absolute/path/to/output>",
-  "images_dir": "</absolute/path/to/output/stem/images>",
+  "images_dir": "</absolute/path/to/output/document.pdf.docs2md/images>",
   "fallback": false,
   "fallback_from": null,
-  "message": "Saved to </absolute/path/to/output/stem/stem.md>"
+  "message": "Saved to </absolute/path/to/output/document.pdf.docs2md/document.md>"
 }
 ```
 
@@ -130,8 +134,8 @@ Do **not** expect a `markdown` field in the response. Read the saved file from
       "file": "</absolute/path/to/folder/paper.pdf>",
       "status": "ok",
       "engine": "mineru",
-      "output_path": "</absolute/path/to/output/paper/paper.md>",
-      "images_dir": "</absolute/path/to/output/paper/images>",
+      "output_path": "</absolute/path/to/output/paper.pdf.docs2md/paper.md>",
+      "images_dir": "</absolute/path/to/output/paper.pdf.docs2md/images>",
       "fallback": false,
       "fallback_from": null
     }
@@ -141,12 +145,16 @@ Do **not** expect a `markdown` field in the response. Read the saved file from
 
 ## Output layout
 
-For every converted file, the service creates a folder named after the input
-file stem and stores everything inside it:
+For every converted file, the service creates a folder named
+`<filename>.docs2md` using the complete input filename, including its
+extension, and stores everything inside it:
 
-- Markdown: `<output_dir>/<stem>/<stem>.md`
-- Images (MinerU only): `<output_dir>/<stem>/images/`
+- Markdown: `<output_dir>/<filename>.docs2md/<stem>.md`
+- Images (MinerU only): `<output_dir>/<filename>.docs2md/images/`
 - Image references in the Markdown are relative to the Markdown file
   (`![](images/...)`), so the folder can be moved or opened as a unit.
 
 Override the base directory with `output_dir`.
+
+Very long output directory names use a shortened prefix plus digest. Always
+use the returned `output_path` rather than constructing it from the filename.

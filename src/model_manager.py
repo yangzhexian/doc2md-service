@@ -20,24 +20,22 @@ Tier requirements:
 
 from __future__ import annotations
 
+import json
 import os
 import sys
+from dataclasses import replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from loguru import logger
+
+if TYPE_CHECKING:
+    from mineru.model.download import ModelRepo
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _MODEL_ROOT = _PROJECT_ROOT / "mineru_models"
 _CONFIG_DIR = _PROJECT_ROOT / "config"
 
-_SMALL_PACKAGE_DIRS = (
-    _MODEL_ROOT / "MinerU-4_models_torch",
-    _MODEL_ROOT / "MinerU-4_models_onnx",
-)
-_VLM_PACKAGE_DIRS = (
-    _MODEL_ROOT / "MinerU2.5-Pro-2605-1.2B",
-    _MODEL_ROOT / "MinerU2.5-Pro-2605-1.2B-GGUF",
-)
 _WEIGHT_SUFFIXES = (".onnx", ".pth", ".safetensors", ".bin", ".pt", ".gguf", ".mnn")
 
 
@@ -51,12 +49,10 @@ def get_model_root() -> Path:
 
 def get_vlm_root() -> Path:
     """Return the VLM package dir for the selected local backend."""
-    if get_vlm_engine() == "llama-cpp":
-        return _VLM_PACKAGE_DIRS[1]
-    for candidate in _VLM_PACKAGE_DIRS:
-        if candidate.is_dir():
-            return candidate
-    return _VLM_PACKAGE_DIRS[0]
+    from mineru.model.registry import vlm_model_repo
+
+    selected = os.environ.get("MINERU_MODEL_VLM_ENGINE", get_vlm_engine())
+    return _local_repo(vlm_model_repo(selected)).local_dir()
 
 
 def ensure_models_dir() -> Path:
@@ -65,13 +61,91 @@ def ensure_models_dir() -> Path:
     return _MODEL_ROOT
 
 
-def _package_present(path: Path) -> bool:
-    if not path.is_dir():
+def _local_repo(repo: ModelRepo, path: Path | None = None) -> ModelRepo:
+    """Bind registry metadata to our runtime root without changing MinerU config.
+
+    MinerU joins ``base_dir / local_name``; an absolute local_name lets its
+    public verifier inspect this tree even if its config singleton was loaded
+    before the service wrote config/mineru.yaml.
+    """
+    if path is None:
+        root = Path(os.environ.get("MINERU_MODEL_BASE_DIR", str(_MODEL_ROOT))).expanduser()
+        path = root / repo.local_name
+    return replace(repo, local_name=str(path.resolve()))
+
+
+def _nonempty_file(path: Path) -> bool:
+    return path.is_file() and path.stat().st_size > 0
+
+
+def _safetensors_present(path: Path) -> bool:
+    """Check a single weight or every shard listed by a safetensors index."""
+    index = path / "model.safetensors.index.json"
+    if not index.exists():
+        return _nonempty_file(path / "model.safetensors")
+    manifest = json.loads(index.read_text(encoding="utf-8"))
+    weight_map = manifest.get("weight_map")
+    if not isinstance(weight_map, dict) or not weight_map:
         return False
-    for p in path.rglob("*"):
-        if p.is_file() and p.stat().st_size > 0 and p.suffix.lower() in _WEIGHT_SUFFIXES:
-            return True
-    return False
+    for name in set(weight_map.values()):
+        if not isinstance(name, str) or not name:
+            return False
+        shard = (path / name).resolve()
+        if not shard.is_relative_to(path.resolve()) or not _nonempty_file(shard):
+            return False
+    return True
+
+
+def _repo_present(repo: ModelRepo) -> bool:
+    from mineru.model.download import verify_model_repo
+
+    root = repo.local_dir()
+    if not verify_model_repo(repo).ready:
+        return False
+    for resource in repo.required_paths():
+        path = resource.local_path()
+        if path.is_file():
+            if not _nonempty_file(path):
+                return False
+        elif path.is_dir():
+            weights = [
+                p for p in path.rglob("*")
+                if p.is_file() and p.suffix.lower() in _WEIGHT_SUFFIXES
+            ]
+            if not weights or not all(_nonempty_file(p) for p in weights):
+                return False
+        else:
+            return False
+
+    # The Torch registry declares these directories as complete snapshots.
+    # Check their runtime files too, so a stale marker cannot hide missing data.
+    if repo.name == "MinerU-4_models_torch":
+        layout = root / repo.paths["pp_doclayout_v2"]
+        ocr = root / repo.paths["pytorch_paddle"]
+        required = (
+            layout / "config.json", layout / "preprocessor_config.json",
+            ocr / "ch_PP-OCRv6_tiny_det_infer.safetensors",
+            ocr / "ch_PP-OCRv6_small_rec_infer.safetensors",
+            ocr / "seal_PP-OCRv4_det_infer.pth",
+        )
+        return all(_nonempty_file(p) for p in required) and _safetensors_present(layout)
+    if repo.name == "MinerU2.5-Pro-2605-1.2B":
+        required = (
+            "config.json", "tokenizer.json", "tokenizer_config.json",
+            "preprocessor_config.json",
+        )
+        return all(_nonempty_file(root / name) for name in required) and _safetensors_present(root)
+    return True
+
+
+def _package_present(path: Path) -> bool:
+    """Verify a known package, including exact runtime paths and nonempty data."""
+    try:
+        from mineru.model.registry import get_model_repo
+
+        return _repo_present(_local_repo(get_model_repo(path.name), path))
+    except (ImportError, OSError, ValueError, TypeError, AttributeError, KeyError, RuntimeError):
+        return False
 
 
 def get_vlm_engine() -> str:
@@ -90,22 +164,40 @@ def get_vlm_engine() -> str:
 
 
 def small_models_present() -> bool:
-    """True when a MinerU 4.x small-model package is installed."""
-    return any(_package_present(p) for p in _SMALL_PACKAGE_DIRS)
+    """True when the actual small-model backend has complete local models."""
+    try:
+        from mineru.model.registry import small_model_repo
+        from mineru.model.runtime.device import TORCH_REQUIRED_MODULES, module_available
+
+        selected = os.environ.get("MINERU_MODEL_SMALL_BACKEND", "auto")
+        repo = small_model_repo(selected)
+        modules = ("onnxruntime",)
+        if repo.name == "MinerU-4_models_torch":
+            modules += TORCH_REQUIRED_MODULES
+        return (
+            all(module_available(name) for name in modules)
+            and _repo_present(_local_repo(repo))
+        )
+    except (ImportError, OSError, ValueError, TypeError, AttributeError, KeyError, RuntimeError):
+        return False
 
 
 def vlm_models_present() -> bool:
-    """True when a MinerU VLM model package is installed."""
-    engine = get_vlm_engine()
-    if engine == "llama-cpp":
-        gguf_dir = _VLM_PACKAGE_DIRS[1]
+    """True when the resolved VLM engine has its complete model package."""
+    try:
+        from mineru.model.registry import vlm_model_repo
+        from mineru.model.runtime.device import module_available
+        from mineru.model.vlm.selector import VLM_REQUIRED_MODULES, resolve_vlm_engine
+
+        selected = os.environ.get("MINERU_MODEL_VLM_ENGINE", get_vlm_engine())
+        engine = resolve_vlm_engine(selected)
+        modules = VLM_REQUIRED_MODULES[engine]
         return (
-            any(p.stat().st_size > 0 for p in gguf_dir.glob("*.gguf") if not p.name.startswith("mmproj-"))
-            and any(p.stat().st_size > 0 for p in gguf_dir.glob("mmproj-*.gguf"))
+            all(module_available(name) for name in modules)
+            and _repo_present(_local_repo(vlm_model_repo(engine)))
         )
-    if engine in {"lmdeploy", "vllm", "mlx"}:
-        return _package_present(_VLM_PACKAGE_DIRS[0])
-    return any(_package_present(p) for p in _VLM_PACKAGE_DIRS)
+    except (ImportError, OSError, ValueError, TypeError, AttributeError, KeyError, RuntimeError):
+        return False
 
 
 def models_look_complete(tier: str = "standard") -> bool:
@@ -116,6 +208,8 @@ def models_look_complete(tier: str = "standard") -> bool:
     - ``standard`` / ``advanced``: small models + VLM (same package).
     """
     tier = (tier or "standard").strip().lower()
+    if tier not in {"flash", "basic", "standard", "advanced"}:
+        return False
     if tier == "flash":
         return True
     if not small_models_present():
@@ -150,16 +244,6 @@ def write_mineru_config() -> Path:
     os.environ["MINERU_CONFIG"] = str(config_path.resolve())
     logger.info(f"Wrote {config_path} (MINERU_CONFIG={config_path})")
     return config_path
-
-
-def _cuda_available() -> bool:
-    """Best-effort CUDA availability check without importing torch eagerly."""
-    try:
-        import torch
-
-        return torch.cuda.is_available()
-    except Exception:
-        return False
 
 
 if __name__ == "__main__":

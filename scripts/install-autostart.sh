@@ -27,18 +27,15 @@ if [ ! -f "$PROJECT_DIR/src/converter_service.py" ]; then
     exit 1
 fi
 
-if [ ! -d "$VENV_DIR" ]; then
-    echo "==> Virtual environment not found. Running start.sh first to set up..."
-    cd "$PROJECT_DIR"
-    bash start.sh "$PORT" &
-    sleep 5
-    # start.sh creates the venv - wait a bit then kill the temporary service
-    kill %1 2>/dev/null || true
-    if [ ! -d "$VENV_DIR" ]; then
-        echo "ERROR: Failed to create virtual environment."
-        exit 1
-    fi
+echo "==> Preparing dependencies..."
+bash "$PROJECT_DIR/start.sh" --setup-only --port "$PORT"
+
+# Check the exact entry point used by the systemd unit before changing it.
+if [ ! -x "$VENV_DIR/bin/uvicorn" ]; then
+    echo "ERROR: uvicorn is not installed in $VENV_DIR/bin." >&2
+    exit 1
 fi
+"$VENV_DIR/bin/uvicorn" --version > /dev/null
 
 # -- 2. Create systemd user directory if needed ----------------------------
 mkdir -p "$HOME/.config/systemd/user"

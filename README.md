@@ -28,12 +28,16 @@ Tracked upstream versions: **MinerU >= 4.0, < 5** and **markitdown >= 0.1.8**.
   (`--remote`).
 - **Automatic fallback** — Falls back to MarkItDown if MinerU conversion fails
   (`fallback: true`, `fallback_from: "mineru"`).
+  PDF page selections require MinerU; failures return an error instead of
+  falling back to whole-document conversion.
 - **Batch processing** — Convert an entire folder of documents at once.
 - **Page ranges** — Re-convert just a slice of a long paper with the 4.0
   page-spec syntax (`pages: "1-5,8"` or `"r3-r1"`).
 - **Predictable output layout** — Every file is saved to
-  `<output_dir>/<stem>/<stem>.md` with extracted images in
-  `<output_dir>/<stem>/images/`.
+  `<output_dir>/<filename>.docs2md/<stem>.md` with extracted images in
+  `<output_dir>/<filename>.docs2md/images/`.
+  The complete source filename separates outputs such as `report.pdf` and
+  `report.docx`; very long directory names use a shortened prefix and digest.
 - **Lightweight API responses** — The API returns status, engine, and the saved
   file path; it never returns the full Markdown content in the JSON body.
 - **Three API modes** — Convert by local file path, file upload, or folder path.
@@ -118,6 +122,10 @@ The script handles everything automatically — virtual environment, dependencie
 and service launch. Pass a port number to change from the default 8000:
 `./start.sh 9090`.  On Windows, use `stop.bat` to stop the background service.
 
+On Linux/macOS, `./start.sh --port 9090 --host 0.0.0.0` selects the listening
+address. Use `./start.sh --setup-only` to prepare dependencies without
+starting a server.
+
 Open **[http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)** for the interactive Swagger UI.
 
 ### 4. (Optional) Autostart on Login / Boot
@@ -125,7 +133,7 @@ Open **[http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)** for the intera
 The service can be configured to start automatically when you log in,
 so you never need to run `start.sh` / `start.bat` manually.
 
-#### Linux / macOS (systemd user service)
+#### Linux (systemd user service)
 
 ```bash
 ./scripts/install-autostart.sh        # default port 8000
@@ -147,6 +155,10 @@ The service logs to the systemd journal:
 ```bash
 journalctl --user -u docs2md -f       # follow logs
 ```
+
+The installer waits for dependency setup to finish before enabling the
+service. The systemd installer requires Linux with systemd; on macOS, use
+`start.sh` directly or configure a launchd job separately.
 
 #### Windows (Startup folder)
 
@@ -220,6 +232,10 @@ download the standard package (`./update.sh`) and keep the default
 | `1-5,8` | pages 1–5 plus page 8 |
 | `r3-r1` | 3rd-from-end through last page |
 
+Page subsets are supported only for PDF inputs with MinerU. Other formats
+and explicit MarkItDown requests require `pages: "all"`. If MinerU fails
+for a page subset, the API returns an error and skips whole-document fallback.
+
 ## API Reference
 
 ### GET /health
@@ -244,16 +260,16 @@ readiness.
 }
 ```
 
-- `models_ready` — whether the models each quality tier needs are present
-  (`flash` is always ready).
+- `models_ready` — whether the selected backend has its complete required
+  model files and runtime dependencies (`flash` is always ready).
 
 ---
 
 ### POST /convert/path
 
 Convert a file by its local absolute path. Results are saved to
-`<output_dir>/<stem>/<stem>.md` by default, with images (if any) in
-`<output_dir>/<stem>/images/`.
+`<output_dir>/<filename>.docs2md/<stem>.md` by default, with images (if any) in
+`<output_dir>/<filename>.docs2md/images/`.
 
 **Request (`application/json`):**
 
@@ -271,12 +287,12 @@ Convert a file by its local absolute path. Results are saved to
 {
   "success": true,
   "engine": "mineru",
-  "output_path": "/path/to/output/document/document.md",
+  "output_path": "/path/to/output/document.pdf.docs2md/document.md",
   "output_dir": "/path/to/output",
-  "images_dir": "/path/to/output/document/images",
+  "images_dir": "/path/to/output/document.pdf.docs2md/images",
   "fallback": false,
   "fallback_from": null,
-  "message": "Saved to /path/to/output/document/document.md"
+  "message": "Saved to /path/to/output/document.pdf.docs2md/document.md"
 }
 ```
 
@@ -311,7 +327,7 @@ results from being lost when the upload temp directory is cleaned up.
 ### POST /convert/folder
 
 Batch-convert all supported files in a folder. Results are saved to
-`<output_dir>/<stem>/<stem>.md` by default. Accepted extensions are the union
+`<output_dir>/<filename>.docs2md/<stem>.md` by default. Accepted extensions are the union
 of every registered engine.
 
 **Request (`application/json`):**
@@ -335,8 +351,8 @@ of every registered engine.
       "file": "/path/to/docs/paper.pdf",
       "status": "ok",
       "engine": "mineru",
-      "output_path": "/path/to/docs/paper/paper.md",
-      "images_dir": "/path/to/docs/paper/images",
+      "output_path": "/path/to/docs/paper.pdf.docs2md/paper.md",
+      "images_dir": "/path/to/docs/paper.pdf.docs2md/images",
       "fallback": false,
       "fallback_from": null
     }
@@ -471,6 +487,23 @@ curl -X POST http://127.0.0.1:8000/convert/upload \
   -F "file=@/path/to/document.docx"
 ```
 
+## Tests
+
+Run the regression suite in the project's environment:
+
+```bash
+./venv/bin/python -m unittest discover -s tests -v
+```
+
+```cmd
+venv\Scripts\python.exe -m unittest discover -s tests -v
+```
+
+The suite covers API errors and fallback, output collisions and rollback,
+model completeness and backend selection, and isolated startup-script
+fixtures. Shell tests require Bash (Git Bash works on Windows); they use
+mock package managers and systemd commands.
+
 ## Project Structure
 
 ```
@@ -492,15 +525,16 @@ doc2md-service/
 │       └── markitdown.py
 ├── scripts/               # Autostart helpers
 │   ├── docs2md.service        # systemd user service template
-│   ├── install-autostart.sh   # Install autostart (Linux / macOS)
+│   ├── install-autostart.sh   # Install autostart (Linux / systemd)
 │   ├── install-autostart.bat  # Install autostart (Windows)
 │   ├── update.py              # Model update logic
 │   └── update_models.py       # Backwards-compatible wrapper
 ├── config/                # Runtime configuration files
 │   └── mineru.yaml            # MinerU 4.x config (auto-generated)
 ├── mineru_models/         # Model weights (not committed)
-│   ├── small/             #   Small models (basic tier and up)
-│   └── vlm/               #   VLM models (standard / advanced)
+│   ├── MinerU-4_models_torch/ # Small models (Torch)
+│   ├── MinerU-4_models_onnx/  # Small models (ONNX)
+│   └── MinerU2.5-Pro-2605-1.2B-GGUF/ # VLM (llama.cpp)
 ├── requirements.txt       # Python dependencies
 ├── README.md              # This file
 ├── .gitignore             # Git ignore rules

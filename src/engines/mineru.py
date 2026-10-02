@@ -9,14 +9,15 @@ page subsets use the 4.0 page-spec syntax (``all``, ``1-5,8``, ``r3-r1``).
 from __future__ import annotations
 
 import os
-import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import zipfile
 from pathlib import Path
+from weakref import WeakValueDictionary
 
 from loguru import logger
 
@@ -25,8 +26,9 @@ from .base import (
     ConvertOptions,
     ConvertResult,
     OutputWriteError,
-    _resolve_output_dir,
+    normalize_mineru_pages,
     normalize_mineru_tier,
+    resolve_output_path,
     write_text_output,
 )
 from .registry import register_engine
@@ -39,6 +41,8 @@ _DEFAULT_TIMEOUT_SECONDS = int(os.environ.get("DOCS2MD_MINERU_TIMEOUT", "1800"))
 _OUTPUT_READY_GRACE_SECONDS = int(
     os.environ.get("DOCS2MD_MINERU_OUTPUT_READY_GRACE", "20")
 )
+_OUTPUT_LOCKS: WeakValueDictionary[str, threading.Lock] = WeakValueDictionary()
+_OUTPUT_LOCKS_GUARD = threading.Lock()
 
 # PDF / images support every tier; Office / HTML / CSV / EPUB / ... are
 # whole-document flash-tier parses (MinerU 4.x, see README tier table).
@@ -118,15 +122,15 @@ def ensure_tier_models(tier: str) -> None:
     )
 
 
-def _restore_image_stems(text: str, short_stem: str, original_stem: str) -> str:
-    """Rewrite the short temp stem only inside markdown link/image destinations."""
-    if short_stem == original_stem:
-        return text
-    return re.sub(
-        r"(\]\([^)]*)" + re.escape(short_stem) + r"([^)]*\))",
-        lambda m: m.group(1) + original_stem + m.group(2),
-        text,
-    )
+def _validate_pages(options: ConvertOptions, file_path: Path | None) -> str:
+    """Only original PDF inputs support a page subset in MinerU 4.x."""
+    pages = normalize_mineru_pages(options.mineru_pages)
+    if file_path is not None and file_path.suffix.lower() != ".pdf" and pages != "all":
+        raise ValueError(
+            "MinerU page selection is only supported for PDF files. "
+            f"Use pages='all' for {file_path.suffix.lower() or 'this input'}."
+        )
+    return pages
 
 
 def _find_images_dir(near_dir: Path, search_root: Path) -> Path | None:
@@ -186,30 +190,72 @@ def _save_markdown(
     output_dir: Path,
     stem: str,
     images_dir: Path | None = None,
+    *,
+    directory_name: str | None = None,
 ) -> str:
-    """Write markdown and optionally copy extracted images next to it."""
-    out_dir = output_dir / stem
+    """Publish images and Markdown together, restoring old images on failure."""
+    out_dir = output_dir / (directory_name or stem)
     out_path = out_dir / f"{stem}.md"
-    write_text_output(out_path, text)
+    dest_images = out_dir / "images"
+    lock_key = os.path.normcase(str(out_dir.resolve()))
+    with _OUTPUT_LOCKS_GUARD:
+        output_lock = _OUTPUT_LOCKS.get(lock_key)
+        if output_lock is None:
+            output_lock = threading.Lock()
+            _OUTPUT_LOCKS[lock_key] = output_lock
 
-    if images_dir is not None and images_dir.is_dir():
-        dest_images = out_dir / "images"
+    with output_lock:
+        staging_dir: Path | None = None
+        old_images_moved = False
+        new_images_published = False
+        cleanup_staging = True
+        error_path = out_path
         try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            staging_dir = Path(tempfile.mkdtemp(prefix=".docs2md-stage-", dir=out_dir))
+            staged_images = staging_dir / "images"
+            backup_images = staging_dir / "previous-images"
+            error_path = dest_images
+            if images_dir is not None:
+                shutil.copytree(images_dir, staged_images)
+
             if dest_images.exists():
-                shutil.rmtree(dest_images, ignore_errors=True)
-                if dest_images.exists():
-                    time.sleep(0.3)
-                    shutil.rmtree(dest_images, ignore_errors=True)
-            if not dest_images.exists():
-                shutil.copytree(images_dir, dest_images)
-                logger.info(f"Copied images to {dest_images}")
-            else:
-                logger.warning(
-                    f"Could not remove existing images directory {dest_images}; "
-                    "skipping image copy"
+                dest_images.rename(backup_images)
+                old_images_moved = True
+            if images_dir is not None:
+                staged_images.rename(dest_images)
+                new_images_published = True
+
+            error_path = out_path
+            write_text_output(out_path, text)
+        except (OSError, OutputWriteError) as exc:
+            # The atomic Markdown writer leaves the previous file intact. Undo
+            # the image swap so that it still references the previous assets.
+            try:
+                if new_images_published:
+                    dest_images.rename(staging_dir / "unpublished-images")
+                if old_images_moved:
+                    backup_images.rename(dest_images)
+            except OSError as rollback_exc:
+                cleanup_staging = False
+                recovery_error = OSError(
+                    f"{exc}; could not restore previous images: {rollback_exc}. "
+                    f"Recovery files are retained in '{staging_dir}'"
                 )
-        except OSError as exc:
-            raise OutputWriteError(dest_images, exc) from exc
+                raise OutputWriteError(error_path, recovery_error) from exc
+            if isinstance(exc, OutputWriteError):
+                raise
+            raise OutputWriteError(error_path, exc) from exc
+        finally:
+            if staging_dir is not None and cleanup_staging:
+                try:
+                    shutil.rmtree(staging_dir)
+                except OSError as exc:
+                    # Publication is complete; locked backup files must not
+                    # turn a coherent new output into a failed conversion.
+                    logger.warning(
+                        f"Could not clean output staging directory {staging_dir}: {exc}"
+                    )
 
     return str(out_path.resolve())
 
@@ -343,6 +389,7 @@ class MinerUEngine(BaseConverterEngine):
 
     def validate_options(self, options: ConvertOptions, file_path: Path | None = None) -> None:
         """Reject tiers whose models (or remote mode) are unavailable."""
+        _validate_pages(options, file_path)
         if _find_mineru_kit_bin() is None:
             raise ValueError(
                 "MinerU CLI (mineru-kit) not found. Install it with: "
@@ -359,6 +406,7 @@ class MinerUEngine(BaseConverterEngine):
             raise ValueError(str(exc)) from exc
 
     def convert(self, file_path: Path, options: ConvertOptions) -> ConvertResult:
+        pages = _validate_pages(options, file_path)
         mineru_bin = _find_mineru_kit_bin()
         if mineru_bin is None:
             raise ValueError(
@@ -377,7 +425,12 @@ class MinerUEngine(BaseConverterEngine):
         # Windows MAX_PATH workaround for long filenames.
         src_path = file_path
         tmp_src: Path | None = None
-        if _needs_short_name(original_name):
+        # HTML resolves local images and stylesheets relative to its source.
+        # Keep that source in place instead of moving only its main file.
+        if (
+            _needs_short_name(original_name)
+            and file_path.suffix.lower() not in {".html", ".htm"}
+        ):
             short_name = _sanitize_filename(original_name)[:30]
             tmp_src = work_dir / f"{short_name}{file_path.suffix.lower()}"
             shutil.copy2(file_path, tmp_src)
@@ -396,9 +449,10 @@ class MinerUEngine(BaseConverterEngine):
             str(src_path),
             "-o", str(out_md_path),
             "--tier", tier,
-            "--pages", options.mineru_pages,
             "--format", "zip",
         ]
+        if file_path.suffix.lower() == ".pdf":
+            cmd.extend(["--pages", pages])
         if options.mineru_remote:
             cmd.append("--remote")
 
@@ -452,11 +506,16 @@ class MinerUEngine(BaseConverterEngine):
                 )
 
             text = md_file.read_text(encoding="utf-8").strip()
-            if tmp_src is not None and file_name != original_name:
-                text = _restore_image_stems(text, file_name, original_name)
-
-            output_dir = _resolve_output_dir(file_path, options.output_dir)
-            out_path = _save_markdown(text, output_dir, original_name, images_source)
+            # MinerU 4.x asset names are independent of the input stem. Keep
+            # exported destinations intact, including real external links.
+            output_dir, output_path = resolve_output_path(file_path, options.output_dir)
+            out_path = _save_markdown(
+                text,
+                output_dir,
+                original_name,
+                images_source,
+                directory_name=output_path.parent.name,
+            )
             images_dest = (
                 str((Path(out_path).parent / "images").resolve())
                 if images_source is not None

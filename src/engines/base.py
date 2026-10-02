@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import re
+import tempfile
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 
 # MinerU >= 4.0 public quality tiers (mineru-kit parse --tier).
@@ -27,12 +30,25 @@ class OutputWriteError(RuntimeError):
 
 
 def write_text_output(output_path: Path, text: str) -> None:
-    """Create the output directory and write Markdown with an actionable error."""
+    """Publish Markdown atomically, preserving the previous file on failure."""
+    temporary_path: Path | None = None
     try:
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(text, encoding="utf-8")
+        descriptor, name = tempfile.mkstemp(
+            prefix=".docs2md_", suffix=".tmp", dir=output_path.parent
+        )
+        temporary_path = Path(name)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(text)
+        os.replace(temporary_path, output_path)
     except OSError as exc:
         raise OutputWriteError(output_path, exc) from exc
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def normalize_mineru_tier(tier: str) -> str:
@@ -144,6 +160,22 @@ def _resolve_output_dir(input_path: Path, requested: Path | None) -> Path:
     if requested is not None:
         return requested.expanduser().resolve()
     return input_path.parent.expanduser().resolve()
+
+
+def resolve_output_path(input_path: Path, requested: Path | None) -> tuple[Path, Path]:
+    """Keep different source extensions separate, even beside the input file."""
+    output_dir = _resolve_output_dir(input_path, requested)
+    directory_name = f"{input_path.name}.docs2md"
+    # Bound the component in UTF-8 as well as Windows characters; a digest
+    # distinguishes long names that share the same truncated prefix.
+    if len(directory_name.encode("utf-8")) > 240:
+        digest = sha256(input_path.name.encode("utf-8")).hexdigest()[:16]
+        suffix = f"-{digest}.docs2md"
+        available = 240 - len(suffix.encode("utf-8"))
+        prefix = input_path.name.encode("utf-8")[:available].decode("utf-8", errors="ignore")
+        directory_name = prefix + suffix
+    document_dir = output_dir / directory_name
+    return output_dir, document_dir / f"{input_path.stem}.md"
 
 
 class BaseConverterEngine:

@@ -224,6 +224,15 @@ def _run_conversion(
     # Fallback to MarkItDown when MinerU fails.
     if result.error and chosen == "mineru" and get_engine("markitdown") is not None:
         mineru_error = result.error
+        if opts.mineru_pages != "all":
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"{mineru_error}; MarkItDown fallback was skipped because it "
+                    "cannot preserve the requested PDF page selection. Retry "
+                    "MinerU, or use pages='all' to allow whole-document fallback."
+                ),
+            )
         logger.warning(f"MinerU failed: {mineru_error}. Falling back to markitdown.")
         fallback = get_engine("markitdown")()
         try:
