@@ -17,6 +17,8 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import converter_service as service  # noqa: E402
 from engines.base import OutputWriteError, resolve_output_path, write_text_output  # noqa: E402
+from engines.base import ConvertOptions  # noqa: E402
+from resource_control import ResourceConfig, ResourceController  # noqa: E402
 
 
 class ServiceTests(unittest.TestCase):
@@ -27,6 +29,22 @@ class ServiceTests(unittest.TestCase):
         # resolved paths, so build fixtures and expectations from the same path.
         self.root = Path(temporary.name).resolve()
         self.client = TestClient(service.app)
+        # Engine failures in these API unit tests are injected in-process.
+        # Dedicated resource tests exercise the real isolated subprocess path.
+        def execute(task, config):
+            options = dict(task.options)
+            if options.get("output_dir") is not None:
+                options["output_dir"] = Path(options["output_dir"])
+            return service._run_conversion_uncontrolled(
+                Path(task.file_path), engine_name=task.engine_name,
+                output_dir=Path(task.output_dir) if task.output_dir else None,
+                options=ConvertOptions(**options),
+            )
+        controller_patch = patch.object(
+            service, "RESOURCE_CONTROLLER", ResourceController(ResourceConfig(), executor=execute)
+        )
+        controller_patch.start()
+        self.addCleanup(controller_patch.stop)
         log_patch = patch("converter_service.logger")
         log_patch.start()
         self.addCleanup(log_patch.stop)

@@ -448,8 +448,17 @@ class MinerUEngine(BaseConverterEngine):
         file_name = src_path.stem
         out_md_path = work_dir / "result.md"
 
+        command_prefix = [mineru_bin]
+        if os.environ.get("DOCS2MD_ISOLATED_WORKER") == "1":
+            # The CLI is a separate interpreter, so apply ONNX, PyTorch, and
+            # llama.cpp caps there rather than relying on parent-side patches.
+            command_prefix = [
+                sys.executable,
+                str(Path(__file__).resolve().parents[1] / "conversion_worker.py"),
+                "--mineru-cli",
+            ]
         cmd: list[str] = [
-            mineru_bin,
+            *command_prefix,
             "parse",
             str(src_path),
             "-o", str(out_md_path),

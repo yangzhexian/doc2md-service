@@ -36,3 +36,7 @@ config/mineru.json
 
 # Local planning notes
 _plan/
+
+# Local agent configuration (shared skills live in skills/)
+/.claude/
+/.mimocode/

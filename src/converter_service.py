@@ -40,6 +40,21 @@ from model_manager import (  # noqa: E402
     models_look_complete,
     write_mineru_config,
 )
+from resource_control import (  # noqa: E402
+    ConversionTimeoutError,
+    ResourceBusyError,
+    ResourceConfig,
+    ResourceController,
+    WorkerExecutionError,
+    WorkerHTTPError,
+)
+from resource_limits import (  # noqa: E402
+    ResourceLimits,
+    UploadBodyLimitMiddleware,
+    collect_folder_inputs,
+    copy_upload_bounded,
+    validate_local_file,
+)
 
 # "auto" routes by extension; a concrete name forces that engine.
 DEFAULT_ENGINE = os.environ.get("DOCS2MD_ENGINE", "auto")
@@ -50,6 +65,9 @@ FALLBACK_ENGINE = os.environ.get("DOCS2MD_FALLBACK_ENGINE", "markitdown")
 DEFAULT_UPLOAD_OUTPUT_DIR = Path(
     os.environ.get("DOCS2MD_UPLOAD_OUTPUT_DIR") or PROJECT_ROOT / "output"
 )
+RESOURCE_CONFIG = ResourceConfig.from_env()
+RESOURCE_LIMITS = ResourceLimits.from_env()
+RESOURCE_CONTROLLER = ResourceController(RESOURCE_CONFIG)
 
 
 class _MinerUFields(BaseModel):
@@ -124,8 +142,13 @@ app = FastAPI(
         "Convert documents (PDF, DOCX, PPTX, XLSX, HTML, CSV, images, etc.) "
         "to Markdown via local engines."
     ),
-    version="4.0.0",
+    version="4.1.0",
     lifespan=_lifespan,
+)
+app.add_middleware(
+    UploadBodyLimitMiddleware,
+    limits=RESOURCE_LIMITS,
+    max_uploads=RESOURCE_CONFIG.max_concurrent + RESOURCE_CONFIG.max_pending,
 )
 
 
@@ -136,6 +159,7 @@ class HealthResponse(BaseModel):
     tiers: list[str]
     models_ready: dict[str, bool]
     cuda_available: bool = Field(default=False)
+    resources: dict[str, Any]
 
 
 class ConvertResponse(BaseModel):
@@ -167,6 +191,10 @@ def health() -> HealthResponse:
         pass
 
     tiers = sorted(MINERU_TIERS)
+    resources = RESOURCE_CONTROLLER.snapshot()
+    resources["limits"].update(asdict(RESOURCE_LIMITS))
+    resources["limits"]["max_upload_body_bytes"] = RESOURCE_LIMITS.max_upload_body_bytes
+    resources["limits"]["max_uploads"] = RESOURCE_CONFIG.max_concurrent + RESOURCE_CONFIG.max_pending
     return HealthResponse(
         status="ok" if list_engines() else "no engines registered",
         engines=list_engines(),
@@ -174,10 +202,11 @@ def health() -> HealthResponse:
         tiers=tiers,
         models_ready={tier: models_look_complete(tier) for tier in tiers},
         cuda_available=cuda,
+        resources=resources,
     )
 
 
-def _run_conversion(
+def _run_conversion_uncontrolled(
     file_path: Path,
     *,
     engine_name: str | None = None,
@@ -185,6 +214,8 @@ def _run_conversion(
     options: ConvertOptions | None = None,
 ) -> ConvertStatusResponse:
     """Run a single conversion using the requested engine, with fallback."""
+    # Recheck after queueing: local inputs can change while a request waits.
+    validate_local_file(file_path, RESOURCE_LIMITS)
     chosen = _pick_engine(engine_name, file_path)
     engine_cls = get_engine(chosen)
     if engine_cls is None:
@@ -270,6 +301,35 @@ def _run_conversion(
     )
 
 
+def _run_conversion(
+    file_path: Path,
+    *,
+    engine_name: str | None = None,
+    output_dir: Path | None = None,
+    options: ConvertOptions | None = None,
+) -> ConvertStatusResponse:
+    """Admit one job and run its engines/fallback within one process budget."""
+    validate_local_file(file_path, RESOURCE_LIMITS)
+    try:
+        return RESOURCE_CONTROLLER.convert(
+            file_path,
+            engine_name=_pick_engine(engine_name, file_path),
+            output_dir=output_dir,
+            options=options,
+        )
+    except ResourceBusyError as exc:
+        raise HTTPException(
+            status_code=429, detail=str(exc), headers={"Retry-After": str(exc.retry_after)}
+        ) from exc
+    except ConversionTimeoutError as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
+    except WorkerHTTPError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail, headers=exc.headers) from exc
+    except WorkerExecutionError as exc:
+        logger.exception("Conversion worker failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 def _options_from_fields(
     *,
     output_dir: Path | None,
@@ -292,8 +352,7 @@ def _options_from_fields(
 def convert_path(request: ConvertPathRequest) -> ConvertResponse:
     """Convert a file already on disk."""
     src = Path(request.file_path).expanduser().resolve()
-    if not src.is_file():
-        raise HTTPException(status_code=404, detail=f"File not found: {src}")
+    validate_local_file(src, RESOURCE_LIMITS)
 
     out_dir = Path(request.output_dir).expanduser().resolve() if request.output_dir else None
     opts = _options_from_fields(
@@ -318,12 +377,14 @@ def convert_upload(
     """Convert an uploaded file."""
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
+    filename = file.filename.replace("\\", "/").rsplit("/", 1)[-1]
+    if filename in ("", ".", "..") or "\x00" in file.filename:
+        raise HTTPException(status_code=400, detail="Invalid upload filename")
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="docs2md_upload_"))
     try:
-        dest = tmp_dir / Path(file.filename).name
-        with dest.open("wb") as f:
-            shutil.copyfileobj(file.file, f)
+        dest = tmp_dir / filename
+        copy_upload_bounded(file.file, dest, RESOURCE_LIMITS)
 
         # Uploaded files have no meaningful on-disk parent; default to the
         # configured upload output directory so results are not lost when the
@@ -368,30 +429,34 @@ def convert_folder(request: ConvertFolderRequest) -> dict[str, Any]:
 
     results: list[dict[str, Any]] = []
     supported = all_supported_extensions()
-    for src in sorted(folder.iterdir()):
-        if src.is_file() and src.suffix.lower() in supported:
-            try:
-                status = _run_conversion(
-                    src,
-                    engine_name=request.engine,
-                    output_dir=out_dir,
-                    options=opts,
-                )
-                results.append(
-                    {
-                        "file": str(src),
-                        "status": "ok",
-                        "engine": status.engine,
-                        "output_path": status.output_path,
-                        "images_dir": status.images_dir,
-                        "fallback": status.fallback,
-                        "fallback_from": status.fallback_from,
-                    }
-                )
-            except HTTPException as exc:
-                results.append({"file": str(src), "status": "error", "detail": exc.detail})
-            except Exception as exc:
-                results.append({"file": str(src), "status": "error", "detail": str(exc)})
+    inputs = collect_folder_inputs(folder, supported, RESOURCE_LIMITS)
+    for src in inputs:
+        try:
+            status = _run_conversion(
+                src,
+                engine_name=request.engine,
+                output_dir=out_dir,
+                options=opts,
+            )
+            results.append(
+                {
+                    "file": str(src),
+                    "status": "ok",
+                    "engine": status.engine,
+                    "output_path": status.output_path,
+                    "images_dir": status.images_dir,
+                    "fallback": status.fallback,
+                    "fallback_from": status.fallback_from,
+                }
+            )
+        except HTTPException as exc:
+            # Stop a batch on overload instead of queueing every remaining
+            # file. Return the normal retryable status and header to callers.
+            if exc.status_code == 429:
+                raise
+            results.append({"file": str(src), "status": "error", "detail": exc.detail, "status_code": exc.status_code})
+        except Exception as exc:
+            results.append({"file": str(src), "status": "error", "detail": str(exc)})
 
     return {"folder": str(folder), "output_dir": str(out_dir), "results": results}
 
