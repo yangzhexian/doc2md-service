@@ -12,11 +12,11 @@ import shutil
 import sys
 import tempfile
 from contextlib import asynccontextmanager
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, Query, Response, UploadFile
 from fastapi.responses import PlainTextResponse
 from loguru import logger
 from pydantic import BaseModel, Field, field_validator
@@ -51,10 +51,11 @@ from resource_control import (  # noqa: E402
 from resource_limits import (  # noqa: E402
     ResourceLimits,
     UploadBodyLimitMiddleware,
-    collect_folder_inputs,
     copy_upload_bounded,
     validate_local_file,
 )
+from batch_inputs import BatchInputPlan, plan_folder_inputs  # noqa: E402
+from batch_jobs import BatchJobManager  # noqa: E402
 
 # "auto" routes by extension; a concrete name forces that engine.
 DEFAULT_ENGINE = os.environ.get("DOCS2MD_ENGINE", "auto")
@@ -112,6 +113,16 @@ class ConvertFolderRequest(_MinerUFields):
         None, description="Base output directory; defaults to folder_path"
     )
     engine: str | None = Field(None, description="Engine override")
+    recursive: bool = Field(False, description="Include subdirectories while preserving relative output paths")
+    extensions: list[str] | None = Field(None, description="Optional supported types, such as ['pdf', 'docx']")
+
+
+class RetryBatchRequest(BaseModel):
+    include_cancelled: bool = Field(False, description="Also resume files cancelled before conversion")
+
+
+class CancelBatchRequest(BaseModel):
+    model_config = {"extra": "forbid"}
 
 
 def _pick_engine(requested: str | None, file_path: Path) -> str:
@@ -128,12 +139,16 @@ def _pick_engine(requested: str | None, file_path: Path) -> str:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    """Write the MinerU 4.x config once on startup."""
+    """Initialize model configuration and own the persistent batch scheduler."""
     try:
         write_mineru_config()
     except Exception:
         logger.exception("Failed to write MinerU config; continuing")
-    yield
+    BATCH_MANAGER.start()
+    try:
+        yield
+    finally:
+        BATCH_MANAGER.close()
 
 
 app = FastAPI(
@@ -142,7 +157,7 @@ app = FastAPI(
         "Convert documents (PDF, DOCX, PPTX, XLSX, HTML, CSV, images, etc.) "
         "to Markdown via local engines."
     ),
-    version="4.1.0",
+    version="4.2.0",
     lifespan=_lifespan,
 )
 app.add_middleware(
@@ -195,6 +210,7 @@ def health() -> HealthResponse:
     resources["limits"].update(asdict(RESOURCE_LIMITS))
     resources["limits"]["max_upload_body_bytes"] = RESOURCE_LIMITS.max_upload_body_bytes
     resources["limits"]["max_uploads"] = RESOURCE_CONFIG.max_concurrent + RESOURCE_CONFIG.max_pending
+    resources["batches"] = BATCH_MANAGER.snapshot()
     return HealthResponse(
         status="ok" if list_engines() else "no engines registered",
         engines=list_engines(),
@@ -415,28 +431,17 @@ def convert_upload(
 @app.post("/convert/folder")
 def convert_folder(request: ConvertFolderRequest) -> dict[str, Any]:
     """Convert every supported file in a folder."""
-    folder = Path(request.folder_path).expanduser().resolve()
-    if not folder.is_dir():
-        raise HTTPException(status_code=404, detail=f"Folder not found: {folder}")
-
-    out_dir = Path(request.output_dir).expanduser().resolve() if request.output_dir else folder
-    opts = _options_from_fields(
-        output_dir=out_dir,
-        tier=request.tier,
-        remote=request.remote,
-        pages=request.pages,
-    )
-
+    folder, out_dir, opts = _folder_parameters(request)
+    plan = _folder_plan(request, folder, out_dir)
     results: list[dict[str, Any]] = []
-    supported = all_supported_extensions()
-    inputs = collect_folder_inputs(folder, supported, RESOURCE_LIMITS)
-    for src in inputs:
+    for index, item in enumerate(plan.items):
+        src = item.path
         try:
             status = _run_conversion(
                 src,
                 engine_name=request.engine,
-                output_dir=out_dir,
-                options=opts,
+                output_dir=item.output_dir,
+                options=replace(opts, output_dir=item.output_dir),
             )
             results.append(
                 {
@@ -450,20 +455,129 @@ def convert_folder(request: ConvertFolderRequest) -> dict[str, Any]:
                 }
             )
         except HTTPException as exc:
-            # Stop a batch on overload instead of queueing every remaining
-            # file. Return the normal retryable status and header to callers.
             if exc.status_code == 429:
-                raise
-            results.append({"file": str(src), "status": "error", "detail": exc.detail, "status_code": exc.status_code})
+                # Keep completed work visible even when a synchronous batch
+                # cannot acquire another slot; clients can resume pending files.
+                raise HTTPException(status_code=429, headers=exc.headers, detail={
+                    "message": exc.detail, "folder": str(folder), "output_dir": str(out_dir),
+                    "results": results, "summary": _folder_summary(results, len(plan.items)),
+                    "pending_files": [str(pending.path) for pending in plan.items[index:]],
+                }) from exc
+            detail = exc.detail[:2048] if isinstance(exc.detail, str) else exc.detail
+            results.append({"file": str(src), "status": "error", "detail": detail, "status_code": exc.status_code})
         except Exception as exc:
-            results.append({"file": str(src), "status": "error", "detail": str(exc)})
+            results.append({"file": str(src), "status": "error", "detail": str(exc)[:2048], "status_code": 500})
 
-    return {"folder": str(folder), "output_dir": str(out_dir), "results": results}
+    return {"folder": str(folder), "output_dir": str(out_dir), "recursive": plan.recursive,
+            "results": results, "summary": _folder_summary(results, len(plan.items))}
+
+
+def _folder_parameters(request: ConvertFolderRequest) -> tuple[Path, Path, ConvertOptions]:
+    try:
+        folder = Path(request.folder_path).expanduser().resolve()
+        output = Path(request.output_dir).expanduser().resolve() if request.output_dir else folder
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail="Invalid folder or output path") from exc
+    options = _options_from_fields(output_dir=output, tier=request.tier, remote=request.remote, pages=request.pages)
+    return folder, output, options
+
+
+def _folder_plan(request: ConvertFolderRequest, folder: Path, output: Path) -> BatchInputPlan:
+    return plan_folder_inputs(folder, all_supported_extensions(), RESOURCE_LIMITS,
+                              recursive=request.recursive, output_dir=output, extensions=request.extensions)
+
+
+def _folder_summary(results: list[dict[str, Any]], total: int) -> dict[str, int]:
+    succeeded = sum(item["status"] == "ok" for item in results)
+    return {"total": total, "processed": len(results), "succeeded": succeeded,
+            "failed": len(results) - succeeded, "pending": total - len(results)}
+
+
+def _batch_identity(request: ConvertFolderRequest, folder: Path, output: Path) -> dict[str, Any]:
+    extensions = None
+    if request.extensions is not None:
+        extensions = sorted({("" if value.strip().startswith(".") else ".") + value.strip().lower()
+                             for value in request.extensions})
+    return {"folder_path": str(folder), "output_dir": str(output), "recursive": request.recursive,
+            "extensions": extensions, "engine": request.engine.lower() if request.engine else None,
+            "tier": request.tier, "remote": request.remote, "pages": request.pages}
+
+
+@app.post("/batches", status_code=202)
+def submit_batch(request: ConvertFolderRequest, response: Response,
+                 idempotency_key: str | None = Header(None, max_length=128)) -> dict[str, Any]:
+    """Accept a persistent batch; poll its Location for progress and results."""
+    folder, output, options = _folder_parameters(request)
+    identity = _batch_identity(request, folder, output)
+    if idempotency_key is not None:
+        if not idempotency_key or any(not 33 <= ord(character) <= 126 for character in idempotency_key):
+            raise HTTPException(status_code=400, detail="Idempotency-Key must contain visible ASCII characters")
+        existing = BATCH_MANAGER.lookup_idempotent(idempotency_key, identity)
+        if existing is not None:
+            response.headers["Location"] = f"/batches/{existing['job_id']}"
+            return existing
+    plan = _folder_plan(request, folder, output)
+    for item in plan.items:
+        selected = _pick_engine(request.engine, item.path)
+        if get_engine(selected) is None:
+            raise HTTPException(status_code=400, detail=f"Unknown engine: {selected}"[:2048])
+    if request.engine and get_engine(request.engine.lower()) is None:
+        raise HTTPException(status_code=400, detail=f"Unknown engine: {request.engine}"[:2048])
+    job = BATCH_MANAGER.submit(plan, engine_name=request.engine.lower() if request.engine else None,
+                               options=options, idempotency_key=idempotency_key, request_identity=identity)
+    response.headers["Location"] = f"/batches/{job['job_id']}"
+    return job
+
+
+@app.get("/batches")
+def list_batches(limit: int = Query(20, ge=1, le=50)) -> dict[str, Any]:
+    return {"jobs": BATCH_MANAGER.list_jobs(limit=limit), "limit": limit}
+
+
+@app.get("/batches/{job_id}")
+def get_batch(job_id: str) -> dict[str, Any]:
+    return BATCH_MANAGER.get(job_id)
+
+
+@app.post("/batches/{job_id}/cancel")
+def cancel_batch(job_id: str, request: CancelBatchRequest | None = None) -> dict[str, Any]:
+    """Stop future items; let an already scheduled file finish safely."""
+    # Parsing the optional empty body also enforces the streaming JSON limit.
+    return BATCH_MANAGER.cancel(job_id)
+
+
+@app.post("/batches/{job_id}/retry", status_code=202)
+def retry_batch(job_id: str, response: Response, request: RetryBatchRequest | None = None) -> dict[str, Any]:
+    job = BATCH_MANAGER.retry(job_id, include_cancelled=request.include_cancelled if request else False)
+    response.headers["Location"] = f"/batches/{job_id}"
+    return job
+
+
+def _batch_limit(name: str, default: int) -> int:
+    raw = os.environ.get(name, str(default)).strip()
+    try:
+        value = int(raw) if raw.isascii() and raw.isdecimal() else 0
+    except ValueError:
+        value = 0
+    if value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
+# Constructing a manager has no filesystem or scheduling effects. Isolated
+# conversion workers import this module too; only the API lifespan starts it.
+BATCH_MANAGER = BatchJobManager(
+    Path(os.environ.get("DOCS2MD_BATCH_STATE_DIR") or PROJECT_ROOT / ".docs2md-state").expanduser().resolve(),
+    lambda path, **kwargs: _run_conversion(path, **kwargs),
+    max_active_jobs=_batch_limit("DOCS2MD_MAX_BATCH_JOBS", 5),
+    max_history_jobs=_batch_limit("DOCS2MD_BATCH_HISTORY_LIMIT", 100),
+    select_engine=lambda path: _pick_engine(None, path),
+)
 
 
 @app.get("/", response_class=PlainTextResponse)
 def root() -> str:
-    return "docs2md service is running. POST to /convert/path, /convert/upload, or /convert/folder."
+    return "docs2md service is running. POST to /convert/path, /convert/upload, /convert/folder, or /batches."
 
 
 if __name__ == "__main__":

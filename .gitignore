@@ -40,3 +40,6 @@ _plan/
 # Local agent configuration (shared skills live in skills/)
 /.claude/
 /.mimocode/
+
+# Persistent local batch metadata
+/.docs2md-state/

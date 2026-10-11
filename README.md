@@ -13,11 +13,12 @@ Locked upstream versions: **MinerU 4.0.5** and **MarkItDown 0.1.8**.
 - **Native multi-format MinerU** — PDF, images, DOCX/PPTX/XLSX, HTML, CSV/TSV, RTF, OpenDocument, EPUB, OFD route to MinerU; MarkItDown covers the rest and acts as automatic fallback.
 - **Remote inference** — pass `remote: true` to offload MinerU inference (`--remote`).
 - **Automatic fallback** — Falls back to MarkItDown if MinerU conversion fails (`fallback: true`, `fallback_from: "mineru"`). PDF page selections require MinerU; failures return an error instead of falling back to whole-document conversion.
-- **Batch processing** — Convert an entire folder of documents at once.
+- **Batch processing** — Convert flat or recursive folders with extension filters; preserve partial results and nested output paths.
+- **Persistent batch jobs** — Submit a batch, poll progress, cancel future files, and retry failed or interrupted items without rerunning successful files.
 - **Page ranges** — Re-convert just a slice of a long paper with the 4.0 page-spec syntax (`pages: "1-5,8"` or `"r3-r1"`).
 - **Predictable output layout** — Every file is saved to `<output_dir>/<filename>.docs2md/<stem>.md` with extracted images in `<output_dir>/<filename>.docs2md/images/`. The complete source filename separates outputs such as `report.pdf` and `report.docx`; very long directory names use a shortened prefix and digest.
 - **Lightweight API responses** — The API returns status, engine, and the saved file path; it never returns the full Markdown content in the JSON body.
-- **Three API modes** — Convert by local file path, file upload, or folder path.
+- **API modes** — Convert by local file path, file upload, synchronous folder request, or persistent batch job.
 - **One-click start** — `start.sh` (Linux/macOS) and `start.bat` (Windows) handle venv creation, dependency install, and service launch. Dependencies are installed with package hashes and refreshed when a dependency lock or its editable input changes.
 - **Swagger UI** — Interactive API docs at `/docs`.
 - **Health check** — `GET /health` reports service status, per-tier model readiness, GPU status, and conversion resource usage.
@@ -131,9 +132,9 @@ To remove autostart on Windows, delete `docs2md.bat` from your Startup folder.
 
 All conversion endpoints share a bounded FIFO queue. By default, one document converts at a time and up to four requests wait for a slot; requests that would overwrite the same document output are serialized. Each conversion runs in a separate process, including its engine fallback. The conversion deadline covers worker startup, engine conversion, and fallback. After the worker and its descendant processes stop, the parent publishes the final Markdown and images while still holding the slot. Final publication is outside the worker deadline so image replacement and rollback can complete without interruption.
 
-A full queue or an expired queue wait returns HTTP 429 with `Retry-After`; an expired conversion deadline returns HTTP 504 for single-file requests. Folder requests stop on overload and return HTTP 429; other per-file failures, including deadlines, appear in the batch results with `status_code`. Outputs already written before a later batch failure remain available. Clients may retry rejected work after the indicated delay.
+A full queue or an expired queue wait returns HTTP 429 with `Retry-After`; an expired conversion deadline returns HTTP 504 for single-file requests. Synchronous folder requests stop on overload and return HTTP 429 with completed `results`, `pending_files`, and `summary` in `detail`; other per-file failures, including deadlines, appear in the batch results with `status_code`. A persistent batch pauses after one item receives three resource-overload responses; delays between attempts honor `Retry-After` and are capped at 60 seconds. Resume with an explicit retry. Outputs already written before a later batch failure remain available. Clients may retry rejected work after the indicated delay.
 
-Input limits apply to local paths, uploads, and folder batches. Oversized files return HTTP 413. Upload requests are bounded before multipart parsing and checked again while copying the document; multipart headers and form fields receive an additional 1 MiB allowance above the file limit. At most `max_concurrent + max_pending` upload requests may be in progress, including parsing and conversion; the default is five, with excess uploads returning HTTP 429 and `Retry-After: 1`. JSON bodies for path and folder requests have a fixed 64 KiB limit.
+Input limits apply to local paths, uploads, and folder batches. Oversized files return HTTP 413. Upload requests are bounded before multipart parsing and checked again while copying the document; multipart headers and form fields receive an additional 1 MiB allowance above the file limit. At most `max_concurrent + max_pending` upload requests may be in progress, including parsing and conversion; the default is five, with excess uploads returning HTTP 429 and `Retry-After: 1`. JSON bodies for path, folder, and batch operations have a fixed 64 KiB limit.
 
 | Environment variable | Default | Effect |
 |---|---|---|
@@ -143,10 +144,13 @@ Input limits apply to local paths, uploads, and folder batches. Oversized files 
 | `DOCS2MD_CONVERSION_TIMEOUT_SECONDS` | `1800` | Deadline for one worker, including fallback |
 | `DOCS2MD_WORKER_THREADS` | `2` | Thread setting for each numerical-library pool in a worker |
 | `DOCS2MD_MAX_FILE_BYTES` | `104857600` (100 MiB) | Maximum size of one input document |
-| `DOCS2MD_MAX_BATCH_FILES` | `100` | Maximum supported files in one folder request |
-| `DOCS2MD_MAX_FOLDER_ENTRIES` | `10000` | Maximum directory entries examined during folder preflight |
+| `DOCS2MD_MAX_BATCH_FILES` | `100` | Maximum selected files in one folder request or batch job |
+| `DOCS2MD_MAX_FOLDER_ENTRIES` | `10000` | Maximum directory entries examined across one folder scan |
+| `DOCS2MD_MAX_BATCH_JOBS` | `5` | Maximum active persistent batch jobs |
+| `DOCS2MD_BATCH_HISTORY_LIMIT` | `100` | Maximum retained batch records; must be at least the active-job limit |
+| `DOCS2MD_BATCH_STATE_DIR` | `<project>/.docs2md-state/` | Directory for persistent SQLite batch metadata |
 
-Folder conversion scans only the immediate directory. It validates the complete bounded batch before starting conversions, so a batch exceeding its file, entry, or document-size limit returns HTTP 413 without converting a partial batch. Subdirectories and unsupported files count toward the scan limit; only supported files count toward the batch limit.
+Folder conversion scans the immediate directory by default; `recursive: true` includes subdirectories. It validates the complete bounded batch before starting conversions or accepting a persistent job, so a batch exceeding its file, entry, or document-size limit returns HTTP 413 without converting a partial batch. All examined entries count toward the scan limit; only files selected by the extension filter count toward the batch limit. Generated `.docs2md` directories, a separate output subtree inside the input folder, and directory symlinks or Windows junctions are skipped. File symlinks remain inputs under their alias filenames.
 
 `DOCS2MD_WORKER_THREADS` applies to OpenMP/BLAS pools, ONNX and PyTorch intra-op pools, and llama.cpp generation threads, including the separate MinerU CLI process. ONNX and PyTorch inter-op pools use one thread.
 
@@ -159,7 +163,7 @@ export DOCS2MD_CONVERSION_TIMEOUT_SECONDS=1800
 ./start.sh
 ```
 
-Use one Uvicorn server process so every request shares the same budget. These settings bound active work and common numerical-library thread pools; they do not impose a hard CPU-percentage, RAM, or GPU-memory cap. Choose the quality tier and concurrency according to available memory.
+Use one Uvicorn server process so every request shares the same budget. Persistent batch jobs use one scheduler that rotates jobs one file at a time and shares the existing conversion controller with synchronous requests. Only one server may own a batch state directory at a time; a second owner fails startup rather than opening the same database concurrently. These settings bound active work and common numerical-library thread pools; they do not impose a hard CPU-percentage, RAM, or GPU-memory cap. Choose the quality tier and concurrency according to available memory.
 
 ## How MinerU Models Are Configured
 
@@ -255,13 +259,27 @@ Returns service status, registered engines, quality tiers, per-tier model readin
     "failed": 0,
     "rejected": 0,
     "conversion_timeouts": 0,
-    "queue_timeouts": 0
+    "queue_timeouts": 0,
+    "batches": {
+      "limits": {"max_active_jobs": 5, "max_history_jobs": 100},
+      "active": 0,
+      "total": 0,
+      "queued": 0,
+      "running": 0,
+      "cancelling": 0,
+      "completed": 0,
+      "completed_with_errors": 0,
+      "cancelled": 0,
+      "paused": 0,
+      "scheduler_running": true,
+      "scheduler_error": null
+    }
   }
 }
 ```
 
 - `models_ready` — whether the selected backend has its complete required model files and runtime dependencies (`flash` is always ready).
-- `resources` — effective limits and counters for this server process; counters reset on restart.
+- `resources` — effective limits and conversion counters for this server process; conversion counters reset on restart. `resources.batches` reports retained job counts, active/history limits, scheduler availability, and `scheduler_error` when scheduling fails.
 
 ---
 
@@ -321,37 +339,157 @@ The default `output_dir` for uploads is the project `output/` directory, or the 
 
 ### POST /convert/folder
 
-Batch-convert supported files in the immediate folder. Results are saved to `<output_dir>/<filename>.docs2md/<stem>.md` by default. Accepted extensions are the union of every registered engine. File, batch, and scan limits are checked before converting any file. Conversion errors are returned per file with `status: "error"`, `detail`, and `status_code` when available; queue overload stops the batch with HTTP 429.
+Convert a folder synchronously. The request stays open until the selected files finish or resource overload stops the batch. Default behavior remains a flat scan. HTTP 200 can contain per-file failures; inspect `summary` and every `results` entry.
 
 **Request (`application/json`):**
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `folder_path` | string | yes | — | Absolute path to the folder |
+| `folder_path` | string | yes | — | Absolute input folder on the server |
 | `output_dir` | string | no | `folder_path` | Base output directory |
+| `recursive` | bool | no | `false` | Include subdirectories and preserve relative parents in output |
+| `extensions` | list of strings | no | `null` | Select supported types, such as `["pdf", ".DOCX"]`; case-insensitive |
 | `engine` | string | no | by extension | Engine override |
 | `tier` | string | no | `"standard"` | MinerU quality tier |
 | `remote` | bool | no | `false` | Use remote MinerU inference |
-| `pages` | string | no | `"all"` | Page spec |
+| `pages` | string | no | `"all"` | Page spec applied to every selected file |
 
-**Response:**
+An omitted extension filter selects the union of registered engines' supported types. An empty list, empty type, or unsupported type returns HTTP 400. Use `extensions: ["pdf"]` when selecting PDF pages in a mixed-format folder; non-PDF files and explicit MarkItDown requests require `pages: "all"`.
+
+Input `/docs/team/report.pdf` with folder `/docs`, output `/out`, and recursion enabled writes `/out/team/report.pdf.docs2md/report.md`. Without an explicit output directory, nested results stay next to each input. Two subdirectories containing `report.pdf` retain separate outputs. Always use the returned output paths because very long filenames use a shortened directory prefix and digest.
+
+**Response with a per-file failure:**
+
 ```json
 {
   "folder": "/path/to/docs",
-  "output_dir": "/path/to/docs",
+  "output_dir": "/path/to/output",
+  "recursive": false,
   "results": [
     {
       "file": "/path/to/docs/paper.pdf",
       "status": "ok",
       "engine": "mineru",
-      "output_path": "/path/to/docs/paper.pdf.docs2md/paper.md",
-      "images_dir": "/path/to/docs/paper.pdf.docs2md/images",
+      "output_path": "/path/to/output/paper.pdf.docs2md/paper.md",
+      "images_dir": "/path/to/output/paper.pdf.docs2md/images",
       "fallback": false,
       "fallback_from": null
+    },
+    {
+      "file": "/path/to/docs/locked.docx",
+      "status": "error",
+      "detail": "Unable to write conversion output: destination is locked",
+      "status_code": 409
+    }
+  ],
+  "summary": {"total": 2, "processed": 2, "succeeded": 1, "failed": 1, "pending": 0}
+}
+```
+
+`summary.total` is the selected file count; `processed` includes success and failure. Resource overload returns HTTP 429 with `Retry-After` and a structured `detail` containing `message`, `folder`, `output_dir`, completed `results`, `summary`, and the remaining `pending_files`, including the file that could not acquire a slot. Preserve completed outputs and resume only pending files instead of blindly resubmitting the whole folder.
+
+### Persistent batch jobs
+
+Use persistent jobs for long or recursive batches. `POST /batches` accepts the same body as `/convert/folder` and returns HTTP 202 with `Location: /batches/<job_id>`. This acknowledges acceptance; poll the location to determine the outcome and inspect each file's engine, fallback, and errors.
+
+```bash
+curl -i -X POST http://127.0.0.1:8000/batches \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: research-import-2026-10" \
+  -d '{"folder_path":"/path/to/docs","output_dir":"/path/to/output","recursive":true,"extensions":["pdf","docx"]}'
+
+# Use the job_id or Location returned by submission:
+curl http://127.0.0.1:8000/batches/JOB_ID
+curl 'http://127.0.0.1:8000/batches?limit=20'
+```
+
+| Endpoint | Result |
+|---|---|
+| `POST /batches` | HTTP 202 and the accepted job with a `Location` header |
+| `GET /batches?limit=20` | Recent job summaries; `limit` must be 1–50 |
+| `GET /batches/{job_id}` | Full progress and per-file items |
+| `POST /batches/{job_id}/cancel` | Cooperative cancellation: finish the current file, then stop remaining files |
+| `POST /batches/{job_id}/retry` | HTTP 202; retry eligible unfinished items in the same job |
+
+**Example `GET /batches/{job_id}` result:**
+
+```json
+{
+  "job_id": "00112233445566778899aabbccddeeff",
+  "status": "completed_with_errors",
+  "folder": "/path/to/docs",
+  "output_dir": "/path/to/output",
+  "recursive": true,
+  "options": {"engine": null, "tier": "standard", "remote": false, "pages": "all"},
+  "created_at": "2026-10-11T04:00:00.000+00:00",
+  "updated_at": "2026-10-11T04:00:07.000+00:00",
+  "cancel_requested": false,
+  "total": 2,
+  "processed": 2,
+  "succeeded": 1,
+  "failed": 1,
+  "cancelled": 0,
+  "pending": 0,
+  "running": 0,
+  "items": [
+    {
+      "index": 0,
+      "file": "/path/to/docs/team/paper.pdf",
+      "relative_path": "team/paper.pdf",
+      "output_dir": "/path/to/output/team",
+      "status": "succeeded",
+      "attempts": 1,
+      "status_code": null,
+      "detail": null,
+      "result": {
+        "success": true,
+        "engine": "markitdown",
+        "output_path": "/path/to/output/team/paper.pdf.docs2md/paper.md",
+        "output_dir": "/path/to/output/team",
+        "images_dir": null,
+        "fallback": true,
+        "fallback_from": "mineru",
+        "message": "Saved to /path/to/output/team/paper.pdf.docs2md/paper.md"
+      }
+    },
+    {
+      "index": 1,
+      "file": "/path/to/docs/team/missing.docx",
+      "relative_path": "team/missing.docx",
+      "output_dir": "/path/to/output/team",
+      "status": "failed",
+      "attempts": 1,
+      "status_code": 404,
+      "detail": "File not found: /path/to/docs/team/missing.docx",
+      "result": null
     }
   ]
 }
 ```
+
+Progress counts are top-level fields, not a nested `summary`. `failed` includes interrupted files; `processed` includes succeeded, failed/interrupted, and cancelled files. `GET /batches` returns `{"jobs": [...], "limit": 20}` with the same job fields except `items`. Item `attempts` excludes resource-overload admission rejections. An empty selection completes with `total: 0` and `items: []`.
+
+Cancellation preserves completed outputs. A running job enters `cancelling` until its current file finishes; cancellation does not forcibly terminate an active conversion or interrupt final publication. The cancel endpoint accepts no body or `{}` and rejects extra fields. Retrying never reruns `succeeded` files. Retry failed, interrupted, or paused pending items with an empty body or `{}`; include `{"include_cancelled": true}` to resume cancelled items as well. Retry is allowed only for terminal or paused jobs; retrying an active job or one with no eligible items returns HTTP 409. Retry reads the selected source files as they exist at that time.
+
+| Job state | Meaning and next action |
+|---|---|
+| `queued` | Accepted and waiting for its turn |
+| `running` | A file is being processed |
+| `cancelling` | Cancellation requested; waiting for the current file to finish |
+| `completed` | All selected files succeeded |
+| `completed_with_errors` | Processing ended with failed or interrupted items; inspect errors and retry eligible items |
+| `cancelled` | Remaining files were cancelled; existing successes remain |
+| `paused` | Limited overload retries were exhausted; inspect load and request a retry |
+
+File states are `pending`, `running`, `succeeded`, `failed`, `interrupted`, and `cancelled`. Poll while a job is `queued`, `running`, or `cancelling`; stop and inspect the outcome for the other states. A successful fallback is a `succeeded` item with its actual engine and fallback metadata.
+
+`Idempotency-Key` is optional and accepts 1–128 visible ASCII characters. Choose one key for each intended batch and reuse it only when retrying that submission. Repeating the key with the same normalized request returns the original retained job, including when its input files have changed or disappeared; using that key with different parameters returns HTTP 409. Reuse the key when a submission response is lost. Without a key, every submission creates a new batch and may replace existing outputs for the same inputs. Keys expire when their retained job records are removed.
+
+Batch metadata uses SQLite from Python's standard library in `DOCS2MD_BATCH_STATE_DIR`, defaulting to the ignored project `.docs2md-state/` directory. A submission stores the selected file list; it does not snapshot the files' contents. Service shutdown stops scheduling new files, waits for the current file, and then closes the database. Restart retains successful results and continues pending files; a previously running item becomes `interrupted` and needs an explicit retry. Recovery does not promise exactly-once execution after an abrupt process failure.
+
+If a SQLite scheduling operation fails, the scheduler stops accepting submissions, retries, and cancellations; those operations return HTTP 503. Inspect `/health` → `resources.batches.scheduler_error` and retained job history to diagnose the failure. History remains readable while its database is available. After the underlying storage problem is resolved, restart the service; previously running items become `interrupted` and require an explicit retry.
+
+History holds at most `DOCS2MD_BATCH_HISTORY_LIMIT` job records. Admission removes the oldest eligible terminal metadata when space is needed, preserving converted outputs. Unfinished paused records are retained; if the history limit is full with unfinished work, submission returns HTTP 429. Cancel unneeded paused jobs to make their records eligible for cleanup. Successful items are not automatically revalidated or repaired if their outputs were deleted; submit a new batch to convert those inputs again.
 
 ---
 
@@ -369,10 +507,12 @@ Batch-convert supported files in the immediate folder. Results are saved to `<ou
 
 Invalid `tier` / `pages` values also return 400 (or 422 for JSON body validation) with an actionable message.
 
-**409 — Output not writable:**
+**409 — Output or batch conflict:**
 ```json
 { "detail": "Unable to write conversion output '...': ... Choose a writable output_dir ..." }
 ```
+
+Batch conflicts include reusing an idempotency key with different parameters, retrying an active job, or having no eligible files to retry.
 
 **413 — Input or batch too large:**
 ```json
@@ -386,12 +526,19 @@ Reduce the document size or batch size, or configure a larger resource limit bef
 { "detail": "Conversion queue is full; retry later" }
 ```
 
-A full conversion queue or an expired queue wait returns `Retry-After` in seconds. Retry after that delay.
+A full conversion queue or an expired queue wait returns `Retry-After` in seconds. Batch admission also returns 429 when active-job or retained-history limits are full. Retry after that delay; synchronous folder overload includes completed results and pending files in structured `detail`.
 
 **504 — Conversion deadline exceeded:**
 ```json
 { "detail": "Conversion exceeded 1800 seconds; its worker process tree was stopped" }
 ```
+
+**503 — Batch manager unavailable:**
+```json
+{ "detail": "Batch manager is not accepting work" }
+```
+
+Preserve the job ID and inspect service availability rather than submitting duplicate jobs.
 
 **500 — Conversion error (after fallback):**
 ```json
@@ -457,8 +604,14 @@ resp = requests.post(
     "http://127.0.0.1:8000/convert/folder",
     json={"folder_path": "/absolute/path/to/docs/"},
 )
-for item in resp.json()["results"]:
-    print(f"{item['file']}: {item['status']} ({item['engine']})")
+data = resp.json()
+if resp.status_code == 429:
+    data = data["detail"]  # completed results and pending_files are preserved
+else:
+    resp.raise_for_status()
+print(data["summary"])
+for item in data["results"]:
+    print(f"{item['file']}: {item['status']} ({item.get('engine', item.get('detail'))})")
 
 # Convert by file upload
 with open("/path/to/document.docx", "rb") as f:
@@ -469,6 +622,40 @@ with open("/path/to/document.docx", "rb") as f:
     )
 print(f"Saved to: {resp.json()['output_path']}")
 ```
+
+For a persistent batch, retain the job ID and poll until the job leaves an active state:
+
+```python
+import time
+import requests
+
+base_url = "http://127.0.0.1:8000"
+submitted = requests.post(
+    f"{base_url}/batches",
+    json={"folder_path": "/absolute/path/to/docs", "recursive": True},
+    headers={"Idempotency-Key": "documents-import-2026-10"},
+    timeout=30,
+)
+submitted.raise_for_status()
+job = submitted.json()
+print(f"Tracking batch {job['job_id']}")
+location = submitted.headers["Location"]
+while job["status"] in {"queued", "running", "cancelling"}:
+    time.sleep(2)
+    polled = requests.get(f"{base_url}{location}", timeout=10)
+    polled.raise_for_status()
+    job = polled.json()
+
+print(f"{job['status']}: {job['succeeded']} succeeded, {job['failed']} failed")
+for item in job["items"]:
+    if item["status"] == "succeeded":
+        result = item["result"]
+        print(item["file"], result["output_path"], result["engine"], result["fallback"])
+    else:
+        print(item["file"], item["status"], item["status_code"], item["detail"])
+```
+
+A `paused` or `cancelled` result may still have pending or cancelled work. Use the explicit retry endpoint when resumption is wanted; polling alone does not resume it.
 
 ### curl
 
@@ -488,10 +675,10 @@ curl -X POST http://127.0.0.1:8000/convert/path \
     "pages": "1-10"
   }'
 
-# Batch folder conversion
+# Recursive PDF-only folder conversion
 curl -X POST http://127.0.0.1:8000/convert/folder \
   -H "Content-Type: application/json" \
-  -d '{"folder_path": "/path/to/docs/"}'
+  -d '{"folder_path": "/path/to/docs/", "recursive": true, "extensions": ["pdf"]}'
 
 # File upload
 curl -X POST http://127.0.0.1:8000/convert/upload \
@@ -514,7 +701,7 @@ venv\Scripts\python.exe -m pip install --require-hashes -r requirements-test.txt
 venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-The suite covers API errors and fallback, output collisions and rollback, model completeness and backend selection, dependency refresh, isolated startup scripts, admission limits, worker deadlines, process cleanup, upload bounds, and batch preflight. Shell tests require Bash (Git Bash works on Windows); only the startup tests mock package managers and systemd commands.
+The suite covers API errors and fallback, output collisions and rollback, model completeness and backend selection, dependency refresh, isolated startup scripts, admission limits, worker deadlines, process cleanup, upload bounds, batch preflight, recursive planning, and persistent batch lifecycle. Shell tests require Bash (Git Bash works on Windows); only the startup tests mock package managers and systemd commands.
 
 The checked-in [real-document corpus](tests/fixtures/real_documents/README.md) contains self-authored PDF, DOCX, PPTX, XLSX, CSV, HTML, and scanned PNG files. The mandatory regressions run 14 actual conversions through MinerU `flash` and MarkItDown, checking content, tables, PDF page selections, links, exported images, and unchanged input hashes. They isolate configuration and use no downloaded models or live service. One PNG OCR regression is opt-in with preinstalled local models:
 
@@ -563,6 +750,8 @@ doc2md-service/
 ├── update.bat             # Download / update MinerU models (Windows)
 ├── src/                   # Application source
 │   ├── converter_service.py   # FastAPI routing
+│   ├── batch_inputs.py        # Bounded recursive input/output planning
+│   ├── batch_jobs.py          # SQLite progress, scheduling, cancel, and retry
 │   ├── resource_control.py    # Queue, worker deadlines, and process cleanup
 │   ├── resource_limits.py     # File, upload, and folder limits
 │   ├── conversion_worker.py   # Isolated engine and fallback execution
@@ -592,6 +781,7 @@ doc2md-service/
 ├── requirements-test.in   # Test inputs + runtime constraints
 ├── requirements-test.txt  # Full runtime/test dependency lock
 ├── requirements.lock.json # Lock provenance and consistency hashes
+├── .docs2md-state/        # Local batch metadata (not committed)
 ├── tests/                 # Unit and real document regressions
 ├── README.md              # This file
 ├── .gitignore             # Git ignore rules
@@ -603,7 +793,7 @@ doc2md-service/
 
 ## Agent Skill
 
-The service ships an [Agent Skills-compatible skill](https://agentskills.io) at `skills/docs2md/SKILL.md`, outside the ignored `.claude/` and `.mimocode/` directories. Load this directory into your agent to start the service, convert individual documents, or batch-process folders through `http://127.0.0.1:8000`.
+The service ships an [Agent Skills-compatible skill](https://agentskills.io) at `skills/docs2md/SKILL.md`, outside the ignored `.claude/` and `.mimocode/` directories. Load this directory into your agent to start the service, convert individual documents, or submit and track recursive batch jobs through `http://127.0.0.1:8000`.
 
 ### Optional Global Installation
 

@@ -84,7 +84,9 @@ class UploadBodyLimitMiddleware:
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         path = scope.get("path", "").rstrip("/")
         is_upload = path == "/convert/upload"
-        is_json = path in ("/convert/path", "/convert/folder")
+        is_json = path in ("/convert/path", "/convert/folder", "/batches") or (
+            path.startswith("/batches/") and path.endswith(("/retry", "/cancel"))
+        )
         if scope["type"] != "http" or not (is_upload or is_json):
             await self.app(scope, receive, send)
             return
